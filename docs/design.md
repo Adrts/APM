@@ -141,7 +141,6 @@ APM 不修改 bucket 中的 manifest，解析层负责把 Scoop 的字段语义�
 | `tools.py` | 7-Zip / innounp / 下载后端的外部工具查找 |
 | `query.py` | list、search、info、status、cleanup |
 | `output.py` | 统一 `[apm]` 前缀输出与失败清单 |
-| `progress.py` | 多行动态进度区（下载/解压），TTY 专属、日志让位 |
 | `util.py` | 路径、junction、硬链接、JSON、长路径等基础工具 |
 | `errors.py` | `ApmError` 及分类异常 |
 | `known_buckets.py` | 已知源清单加载器：读取 `apps\apm\buckets.json`（程序数据，不经过 `APM_ROOT`），清单可编辑而无需改代码 |
@@ -298,7 +297,7 @@ apps\<app>\
 | 后端 | 实现 |
 | --- | --- |
 | `python` | `urllib.request.urlopen`，60 秒超时，256 KiB 分块写入，自动跟随重定向 |
-| `aria2` | `aria2c --enable-rpc=true --rpc-listen-port <随机端口> --rpc-secret <一次性随机值> --quiet=true --stop-with-process <APM 进程号> --allow-overwrite=true --auto-file-renaming=false --file-allocation=none --console-log-level=warn`；下载经 `aria2.addUri` 下发（`dir`/`out`/`split`/`max-connection-per-server`/`max-tries=1`/`user-agent`/`header` 作为 RPC 选项），进度经 `aria2.tellStatus` 轮询，结束调用 `aria2.shutdown` |
+| `aria2` | `aria2c --dir <cache> --out <缓存名> --split N --max-connection-per-server N --allow-overwrite=true --auto-file-renaming=false --file-allocation=none --max-tries=1 --console-log-level=warn --summary-interval=0` |
 | `curl` | `curl.exe -L --fail --retry 0 --silent --show-error --output <临时文件> --connect-timeout 30` |
 | `wget` | `wget.exe --no-verbose --output-document <临时文件> --timeout=60 --tries=1` |
 
@@ -308,13 +307,7 @@ apps\<app>\
 
 - 默认后端：`python`。
 - 断点续传：暂不规划。APM 层不实现续传；外部下载器自身的行为（如 aria2 的 `.aria2` 控制文件）不纳入保证范围。
-- 重试：APM 层不发起重试；四种后端均显式只尝试一次——`curl` 用 `--retry 0`、`aria2` 经 RPC 选项 `max-tries=1`、`wget` 用 `--tries=1`、`python` 单次请求不循环。
-- 进度展示（`progress.py`）：stdout 为 TTY 时渲染多行动态进度区，每个任务一行（`任务 [████░░░░] 67%  8.6/17.2 MB`），非 TTY 或 `NO_COLOR` 下完全静默；普通日志打印前自动清除进度区，日志与动态区互不覆盖。渲染节流 50ms，任务结束由常规日志接管。
-- 进度数据来源按「官方接口优先」取舍：
-  - 官方编程接口：`python` 后端按响应字节流计数；`zip`/`tar` 按归档条目数（标准库）；`gzip/bz2/xz` 单文件解压按压缩字节读取量（标准库包装）。
-  - 官方进程接口：`aria2` 使用官方 JSON-RPC（`--enable-rpc` + `addUri`/`tellStatus`，0.2 秒查询间隔，结束时 `shutdown`；`--stop-with-process` 保证 APM 退出后 aria2 不残留），与其官方 WebUI 同一机制。
-  - 无官方接口但有官方进度开关与稳定输出格式：`7z` 使用 `-bsp1` 解析进度行（社区打包器的通用做法）。
-  - 无官方进度接口：`curl` 与 `wget` 不解析给人看的 progress meter，保持无进度条（二者均为回退后端）。
+- 重试：APM 层不发起重试；四种后端均显式只尝试一次——`curl` 用 `--retry 0`、`aria2` 用 `--max-tries=1`、`wget` 用 `--tries=1`、`python` 单次请求不循环。
 - 并发分两级，均由配置项控制，互不混用：
   - 多软件并发：同时下载的安装包数量，对应 `download.concurrency.apps`。
   - 单文件分片并发：单个安装包的分片连接数，对应 `download.concurrency.segments`，仅对支持分片的后端（`aria2`）生效；`python`、`curl`、`wget` 固定为 1。

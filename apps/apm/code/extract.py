@@ -19,7 +19,6 @@ from . import tools
 from .errors import ExtractError
 from .manifest import url_extension
 from .output import console
-from .progress import progress
 from .util import (
     ensure_dir,
     is_reparse_dir,
@@ -125,37 +124,30 @@ def _zip_entry_name(info: zipfile.ZipInfo) -> str:
 
 def _extract_zip(archive: Path, dest: Path) -> None:
     ensure_dir(dest)
-    key = f"ex-{archive.name}"
     with zipfile.ZipFile(lp(archive)) as zf:
-        infos = [info for info in zf.infolist() if info.filename]
-        progress.start(key, f"解压 {archive.name}", len(infos), unit="count")
-        try:
-            for index, info in enumerate(infos, 1):
-                name = _zip_entry_name(info)
-                if not name:
-                    continue
-                mode = (info.external_attr >> 16) & 0xFFFF
-                if name.endswith("/") or stat.S_ISDIR(mode):
-                    directory = _target(dest, name)
-                    ensure_dir(directory)
-                    continue
-                target = _target(dest, name)
-                ensure_dir(target.parent)
-                if stat.S_ISLNK(mode):
-                    link_name = zf.read(info).decode("utf-8", errors="replace")
-                    link_target = (target.parent / link_name).resolve()
-                    if os.path.isabs(link_name) or not path_is_within(dest, link_target):
-                        raise ExtractError(f"拒绝越界符号链接：{name} -> {link_name}")
-                    try:
-                        os.symlink(link_name, target)
-                    except OSError as exc:
-                        raise ExtractError(f"无法创建符号链接：{name}（{exc}）") from exc
-                    continue
-                with zf.open(info) as source, open(lp(target), "wb") as output:
-                    shutil.copyfileobj(source, output, length=1024 * 1024)
-                progress.update(key, done=index)
-        finally:
-            progress.finish(key)
+        for info in zf.infolist():
+            name = _zip_entry_name(info)
+            if not name:
+                continue
+            mode = (info.external_attr >> 16) & 0xFFFF
+            if name.endswith("/") or stat.S_ISDIR(mode):
+                directory = _target(dest, name)
+                ensure_dir(directory)
+                continue
+            target = _target(dest, name)
+            ensure_dir(target.parent)
+            if stat.S_ISLNK(mode):
+                link_name = zf.read(info).decode("utf-8", errors="replace")
+                link_target = (target.parent / link_name).resolve()
+                if os.path.isabs(link_name) or not path_is_within(dest, link_target):
+                    raise ExtractError(f"拒绝越界符号链接：{name} -> {link_name}")
+                try:
+                    os.symlink(link_name, target)
+                except OSError as exc:
+                    raise ExtractError(f"无法创建符号链接：{name}（{exc}）") from exc
+                continue
+            with zf.open(info) as source, open(lp(target), "wb") as output:
+                shutil.copyfileobj(source, output, length=1024 * 1024)
 
 
 def _extract_zip_isolated(archive: Path, dest: Path) -> None:
@@ -193,17 +185,12 @@ def _extract_tar(archive: Path, dest: Path) -> None:
     remove_path(staging)
     ensure_dir(staging)
     ensure_dir(dest)
-    key = f"ex-{archive.name}"
-    progress.start(key, f"解压 {archive.name}", unit="count")
     try:
         with tarfile.open(lp(archive)) as tf:
-            members = _safe_tar_members(tf, staging)
-            progress.update(key, total=len(members))
-            for index, member in enumerate(members, 1):
+            for member in _safe_tar_members(tf, staging):
                 target = _target(staging, member.name)
                 if member.isdir():
                     ensure_dir(target)
-                    progress.update(key, done=index)
                     continue
                 ensure_dir(target.parent)
                 if member.isreg():
@@ -224,10 +211,8 @@ def _extract_tar(archive: Path, dest: Path) -> None:
                     if not source.exists():
                         raise ExtractError(f"硬链接源不存在：{member.linkname}")
                     os.link(lp(source), lp(target))
-                progress.update(key, done=index)
         _merge_move(staging, dest)
     finally:
-        progress.finish(key)
         remove_path(staging)
 
 
@@ -247,35 +232,12 @@ def _extract_single(archive: Path, dest: Path) -> None:
     ensure_dir(dest)
     output = dest / (output_name or "output")
     tmp = output.with_name(output.name + ".tmp")
-    key = f"ex-{archive.name}"
-    total = archive.stat().st_size
-
-    class _CountingReader:
-        # 包装压缩文件句柄，统计已读取的压缩字节，供进度条展示。
-        def __init__(self, fh) -> None:
-            self._fh = fh
-            self.count = 0
-
-        def read(self, size: int) -> bytes:
-            data = self._fh.read(size)
-            self.count += len(data)
-            return data
-
     try:
-        progress.start(key, f"解压 {archive.name}", total)
-        with open(lp(archive), "rb") as raw:
-            counter = _CountingReader(raw)
-            with opener(counter, "rb") as source, open(lp(tmp), "wb") as target:
-                while True:
-                    chunk = source.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    target.write(chunk)
-                    progress.update(key, done=counter.count)
+        with opener(lp(archive), "rb") as source, open(lp(tmp), "wb") as target:
+            shutil.copyfileobj(source, target, length=1024 * 1024)
         remove_path(output)
         os.replace(lp(tmp), lp(output))
     finally:
-        progress.finish(key)
         if tmp.exists():
             remove_path(tmp)
 
@@ -289,18 +251,9 @@ def _seven_zip_extract(archive: Path, dest: Path, seven_zip: Path) -> None:
         f"-o{dest}",
         "-y",
         "-bso0",
-        "-bsp1",
+        "-bsp0",
     ]
-    key = f"ex-{archive.name}"
-
-    def on_percent(value: int) -> None:
-        progress.update(key, percent=value)
-
-    progress.start(key, f"解压 {archive.name}")
-    try:
-        proc = tools.run_tool_streamed(cmd, parse_stream="stdout", on_percent=on_percent)
-    finally:
-        progress.finish(key)
+    proc = tools.run_tool(cmd)
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()
         raise ExtractError(

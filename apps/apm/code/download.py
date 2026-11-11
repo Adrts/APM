@@ -2,51 +2,26 @@
 
 from __future__ import annotations
 
-import contextlib
-import json
 import os
-import subprocess
 import threading
-import time
 import urllib.error
 import urllib.request
-import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urldefrag, urlparse
 
 from . import cache, paths, tools, verify
 from .errors import DownloadError
 from .manifest import AppRef
 from .output import console
-from .progress import progress
 from .util import ensure_dir, lp, remove_path
 
 USER_AGENT = "APM/0.1"
 
 _warned_mirrors: set[str] = set()
 _warn_lock = threading.Lock()
-
-# 协作式取消：Ctrl+C 时置位，工作线程在块间检查点自行退出，
-# 避免 ThreadPoolExecutor 的非 daemon 线程把进程拖到下载结束。
-_cancel = threading.Event()
-_workers_lock = threading.Lock()
-_active_workers = 0
-
-
-def request_cancel() -> None:
-    _cancel.set()
-
-
-def cancel_requested() -> bool:
-    return _cancel.is_set()
-
-
-def active_workers() -> int:
-    with _workers_lock:
-        return _active_workers
 
 
 @dataclass
@@ -139,7 +114,23 @@ def _request_url(url: str) -> str:
     return urldefrag(url)[0]
 
 
-def _python_download(url: str, dest: Path, cookie: str | None, key: str, label: str) -> None:
+def _progress_callback(label: str) -> Callable[[int, int], None]:
+    state = {"last": -1}
+
+    def callback(read: int, total: int) -> None:
+        if total <= 0:
+            return
+        percent = min(100, int(read * 100 / total))
+        if percent >= state["last"] + 10 or percent == 100:
+            state["last"] = percent
+            console.progress(f"{label} {percent:3d}%")
+
+    return callback
+
+
+def _python_download(
+    url: str, dest: Path, cookie: str | None, progress: bool, label: str
+) -> None:
     headers = {"User-Agent": USER_AGENT}
     if cookie:
         headers["Cookie"] = cookie
@@ -147,7 +138,7 @@ def _python_download(url: str, dest: Path, cookie: str | None, key: str, label: 
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
             total = int(response.headers.get("Content-Length") or 0)
-            progress.start(key, label, total)
+            callback = _progress_callback(label) if progress else None
             read = 0
             with open(lp(dest), "wb") as fh:
                 while True:
@@ -156,19 +147,19 @@ def _python_download(url: str, dest: Path, cookie: str | None, key: str, label: 
                         break
                     fh.write(chunk)
                     read += len(chunk)
-                    progress.update(key, done=read)
+                    if callback:
+                        callback(read, total)
+            if callback:
+                console.progress(f"{label} 100%", final=True)
     except urllib.error.HTTPError as exc:
         raise DownloadError(f"HTTP {exc.code}：{url}") from exc
     except urllib.error.URLError as exc:
         raise DownloadError(f"网络错误：{exc.reason}（{url}）") from exc
     except OSError as exc:
         raise DownloadError(f"写入失败：{exc}") from exc
-    finally:
-        progress.finish(key)
 
 
 def _run_backend(cmd: list[str], url: str) -> None:
-    # curl/wget 无官方进度接口，保持无进度条；后端自身重试已用参数关闭。
     proc = tools.run_tool(cmd)
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()
@@ -215,136 +206,42 @@ def _wget_download(url: str, dest: Path, cookie: str | None, wget: Path) -> None
     _run_backend(cmd, url)
 
 
-def _free_tcp_port() -> int:
-    import socket
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
-
-
-def _aria2_rpc(port: int, secret: str, method: str, params: list[Any], timeout: float = 5.0) -> Any:
-    request = urllib.request.Request(
-        f"http://127.0.0.1:{port}/jsonrpc",
-        data=json.dumps(
-            {
-                "jsonrpc": "2.0",
-                "id": "apm",
-                "method": method,
-                "params": ["token:" + secret, *params],
-            }
-        ).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    if "error" in payload:
-        raise DownloadError(f"aria2 RPC {method} 失败：{payload['error']}")
-    return payload.get("result")
-
-
-def _aria2_wait_rpc(port: int, secret: str, process: subprocess.Popen) -> None:
-    deadline = time.monotonic() + 5.0
-    while True:
-        if process.poll() is not None:
-            raise DownloadError(f"aria2 RPC 进程提前退出（退出码 {process.returncode}）")
-        try:
-            _aria2_rpc(port, secret, "aria2.getVersion", [], timeout=1.0)
-            return
-        except (urllib.error.URLError, OSError):
-            if time.monotonic() >= deadline:
-                raise DownloadError("aria2 RPC 服务未在 5 秒内就绪")
-            time.sleep(0.05)
-
-
 def _aria2_download(
     url: str,
     dest: Path,
     cookie: str | None,
     aria2: Path,
     segments: int,
-    key: str,
-    label: str,
 ) -> None:
-    # 官方进度接口：JSON-RPC（--enable-rpc + tellStatus），与 aria2 官方 WebUI 同一机制。
     ensure_dir(dest.parent)
     if dest.exists():
         remove_path(dest)
     control = Path(str(dest) + ".aria2")
     if control.exists():
         remove_path(control)
-
-    port = _free_tcp_port()
-    secret = uuid.uuid4().hex
     cmd = [
         str(aria2),
-        "--enable-rpc=true",
-        "--rpc-listen-port",
-        str(port),
-        "--rpc-secret",
-        secret,
-        "--quiet=true",
-        # 父进程退出时 aria2 自行退出，避免孤儿进程。
-        "--stop-with-process",
-        str(os.getpid()),
+        "--dir",
+        str(dest.parent),
+        "--out",
+        dest.name,
+        "--split",
+        str(max(1, segments)),
+        "--max-connection-per-server",
+        str(max(1, segments)),
         "--allow-overwrite=true",
         "--auto-file-renaming=false",
         "--file-allocation=none",
+        "--max-tries=1",
         "--console-log-level=warn",
+        "--summary-interval=0",
+        "--user-agent",
+        USER_AGENT,
     ]
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    try:
-        _aria2_wait_rpc(port, secret, process)
-        options: dict[str, Any] = {
-            "dir": str(dest.parent),
-            "out": dest.name,
-            "split": str(max(1, segments)),
-            "max-connection-per-server": str(max(1, segments)),
-            "max-tries": "1",
-            "user-agent": USER_AGENT,
-        }
-        if cookie:
-            options["header"] = [f"Cookie: {cookie}"]
-        gid = _aria2_rpc(port, secret, "aria2.addUri", [[_request_url(url)], options])
-
-        progress.start(key, label)
-        try:
-            while True:
-                status = _aria2_rpc(
-                    port,
-                    secret,
-                    "aria2.tellStatus",
-                    [gid, ["status", "totalLength", "completedLength", "errorCode", "errorMessage"]],
-                )
-                if status["status"] == "complete":
-                    progress.update(
-                        key, done=int(status.get("completedLength") or 0), total=int(status.get("totalLength") or 0)
-                    )
-                    break
-                if status["status"] in ("error", "removed"):
-                    detail = status.get("errorMessage") or status.get("errorCode") or ""
-                    raise DownloadError(f"下载失败：{url}\n{detail}".strip())
-                progress.update(
-                    key, done=int(status.get("completedLength") or 0), total=int(status.get("totalLength") or 0)
-                )
-                time.sleep(0.2)
-        finally:
-            progress.finish(key)
-            with contextlib.suppress(Exception):
-                _aria2_rpc(port, secret, "aria2.shutdown", [], timeout=1.0)
-    finally:
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=5)
-    if process.returncode != 0:
-        raise DownloadError(f"下载失败（aria2 退出码 {process.returncode}）：{url}")
+    if cookie:
+        cmd.extend(["--header", f"Cookie: {cookie}"])
+    cmd.append(_request_url(url))
+    _run_backend(cmd, url)
 
 
 def _backend_name(config: dict[str, Any]) -> str:
@@ -354,12 +251,12 @@ def _backend_name(config: dict[str, Any]) -> str:
 def _download_one(
     item: DownloadItem,
     config: dict[str, Any],
+    progress: bool,
     cache_hit: bool,
 ) -> DownloadResult:
     backend = _backend_name(config)
     cookie = _cookie_header(item.cookie)
-    key = item.path.name
-    label = f"下载 {item.app} {item.version}"
+    label = f"下载 {item.app} {item.version} ({item.path.name})"
     ensure_dir(item.path.parent)
     tmp = item.path.with_name(item.path.name + ".download")
 
@@ -378,7 +275,7 @@ def _download_one(
         if backend == "python":
             if tmp.exists():
                 remove_path(tmp)
-            _python_download(transport, tmp, cookie, key, label)
+            _python_download(transport, tmp, cookie, progress, label)
             target = tmp
         elif backend == "curl":
             curl = tools.find_backend("curl")
@@ -403,7 +300,7 @@ def _download_one(
             segments = int(
                 config.get("download", {}).get("concurrency", {}).get("segments", 5)
             )
-            _aria2_download(transport, item.path, cookie, aria2, segments, key, label)
+            _aria2_download(transport, item.path, cookie, aria2, segments)
             target = item.path
         else:
             raise DownloadError(f"未知的下载后端：{backend}")
@@ -442,6 +339,7 @@ def download_all(items: list[DownloadItem], config: dict[str, Any]) -> list[Down
         config.get("download", {}).get("concurrency", {}).get("apps", 3)
     )
     concurrency = max(1, concurrency)
+    progress = concurrency == 1 and console.color
     results: dict[int, DownloadResult] = {}
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
         futures = {
@@ -449,6 +347,17 @@ def download_all(items: list[DownloadItem], config: dict[str, Any]) -> list[Down
                 _download_one,
                 item,
                 config,
+                progress and console.color,
                 item.path.exists(),
             ): index
-    
+            for index, item in enumerate(items)
+        }
+        for future in as_completed(futures):
+            index = futures[future]
+            try:
+                results[index] = future.result()
+            except Exception as exc:  # noqa: BLE001
+                results[index] = DownloadResult(
+                    item=items[index], ok=False, error=str(exc)
+                )
+    return [results[index] for index in range(len(items))]

@@ -2,18 +2,13 @@
 
 from __future__ import annotations
 
-import re
 import shutil
-import subprocess
-import threading
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from . import paths
 from .errors import ToolError
 from .util import run
-
-PERCENT_RE = re.compile(r"(\d{1,3})%")
 
 
 def _configured_path(value: Any) -> Path | None:
@@ -73,64 +68,3 @@ def find_backend(name: str) -> Path | None:
 
 def run_tool(cmd: list[str], cwd: Path | None = None):
     return run([str(part) for part in cmd], cwd=cwd)
-
-
-def run_tool_streamed(
-    cmd: list[str],
-    cwd: Path | None = None,
-    parse_stream: str = "stderr",
-    on_percent: Callable[[int], None] | None = None,
-) -> subprocess.CompletedProcess:
-    """Run a tool while parsing ``NN%`` from one output stream.
-
-    The parsed stream is consumed incrementally (progress tools rewrite the
-    same line with ``\\r``), the other stream is drained in a background
-    thread. Returns a CompletedProcess compatible with ``run_tool``.
-    """
-    argv = [str(part) for part in cmd]
-    proc = subprocess.Popen(
-        argv,
-        cwd=str(cwd) if cwd else None,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    chunks: dict[str, list[bytes]] = {"stdout": [], "stderr": []}
-
-    def drain(name: str, stream) -> None:
-        try:
-            for chunk in iter(lambda: stream.read(8192), b""):
-                chunks[name].append(chunk)
-        finally:
-            stream.close()
-
-    other = "stdout" if parse_stream == "stderr" else "stderr"
-    reader = threading.Thread(
-        target=drain, args=(other, proc.stderr if other == "stderr" else proc.stdout)
-    )
-    reader.start()
-
-    stream = proc.stderr if parse_stream == "stderr" else proc.stdout
-    tail = b""
-    try:
-        while True:
-            chunk = stream.read(8192)
-            if not chunk:
-                break
-            chunks[parse_stream].append(chunk)
-            if on_percent is not None:
-                tail = (tail + chunk)[-256:]
-                matches = PERCENT_RE.findall(tail.decode("utf-8", errors="replace"))
-                if matches:
-                    try:
-                        on_percent(int(matches[-1]))
-                    except Exception:
-                        pass
-        stream.close()
-    finally:
-        reader.join()
-    return subprocess.CompletedProcess(
-        argv,
-        proc.wait(),
-        stdout=b"".join(chunks["stdout"]).decode("utf-8", errors="replace"),
-        stderr=b"".join(chunks["stderr"]).decode("utf-8", errors="replace"),
-    )
