@@ -93,8 +93,15 @@ def transport_url(url: str, config: dict[str, Any]) -> str:
     if parsed.scheme not in ("http", "https"):
         return url
     host = (parsed.hostname or "").lower()
+    lowered = url.lower()
     mirror = config.get("download", {}).get("mirror", {})
-    if "github.com" in host or "github.com" in url.lower():
+    is_github = (
+        "github.com" in host
+        or "github.com" in lowered
+        or "githubusercontent.com" in host
+        or "githubusercontent.com" in lowered
+    )
+    if is_github:
         prefix = str(mirror.get("github") or "").strip()
         if not prefix:
             _warn_mirror("github")

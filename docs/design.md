@@ -410,7 +410,7 @@ apps\<app>\
 
 在进入下载后端之前，先判断 URL 是否属于可加速地址：
 
-- 匹配规则：URL 字符串包含 `github.com` 或 `sourceforge.net`（大小写不敏感），且协议为 http/https。
+- 匹配规则：URL 主机包含 `github.com` 或 `githubusercontent.com`（含 `raw.githubusercontent.com`），且协议为 http/https；`sourceforge.net` 同理。
 - 配置项：
   - `download.mirror.github`：GitHub 加速前缀。
   - `download.mirror.sourceforge`：SourceForge 加速前缀。
