@@ -53,10 +53,20 @@ def require_innounp(config: dict[str, Any]) -> Path:
     return tool
 
 
+BACKEND_EXES = {
+    "aria2": "aria2c.exe",
+    "curl": "curl.exe",
+    "wget": "wget.exe",
+}
+
+
 def find_backend(name: str) -> Path | None:
-    exe = {"aria2": "aria2c.exe", "curl": "curl.exe", "wget": "wget.exe"}.get(name)
+    exe = BACKEND_EXES.get(name)
     if not exe:
         return None
+    shim = paths.SHIM_DIR / exe
+    if shim.is_file():
+        return shim
     found = shutil.which(exe)
     return Path(found) if found else None
 

@@ -286,7 +286,8 @@ apps\<app>\
 
 - 配置项 `download.backend`（见第 8 节）：`python` / `aria2` / `curl` / `wget`，默认 `python`，必须显式指定其一。
 - 不提供自动选择：指定的后端未安装或不可用时直接报错，不静默切换。
-- 外部后端（`aria2c.exe` / `curl.exe` / `wget.exe`）只从 PATH 查找，不读取配置项，也不查 `apps` 目录。
+- 外部后端（`aria2c.exe` / `curl.exe` / `wget.exe`）按「`shims\<exe>` → PATH」两阶段查找：先找 APM 生成的用户级命令入口，未安装时才使用 PATH 中的系统版本。`shims` 入口由 manifest 的 `bin` 生成，能覆盖任意应用名和安装布局，不直接按应用目录猜测路径。
+- 之所以不能依赖 PATH：Windows 组合环境块时，`Path` 是唯一被拼接而非覆盖的变量，顺序固定为「系统 PATH（HKLM）在前、用户 PATH（HKCU）追加在后」。因此 `env_add_path` 的前插只作用于用户段，永远排在 `C:\Windows\System32` 之后；系统自带 `curl.exe` 会先于 APM 的 `shims\curl.exe` 命中。`where <exe>` 可直接验证该顺序。
 - 无论使用哪个后端，**哈希校验、缓存落盘、进度展示与失败清理由 APM 统一负责**，外部后端只负责将字节写入临时文件。
 - User-Agent 统一为 `APM/0.1`；`python` 与 `curl` 显式设置，`wget`、`aria2` 通过各自参数设置。
 - 超时：`python` 60 秒；`curl` 连接超时 30 秒；`wget` 60 秒；`aria2` 使用自身默认值。
@@ -1036,27 +1037,30 @@ flowchart TD
     P1 -->|"失败"| PF["删除 .download，标记该包失败"]
     P2 --> Q["所有下载任务结束"]
 
-    E -->|"aria2"| A0{"检测 aria2c"}
-    A0 -->|"不存在"| AE["标记该包失败：未检测到 aria2c"]
-    A0 -->|"存在"| A1["aria2 直接下载到正式缓存名"]
+    E -->|"aria2"| A0["搜索 aria2c 程序入口：shims → PATH"]
+    A0 --> A0E{"找到程序入口"}
+    A0E -->|"否"| AE["标记该包失败：未检测到 aria2c"]
+    A0E -->|"是"| A1["aria2 直接下载到正式缓存名"]
     A1 --> A2{"校验是否通过"}
     A2 -->|"通过"| A3["清理 .aria2 控制文件"]
     A2 -->|"失败"| AF["删除缓存文件与 .aria2，标记该包失败"]
     A3 --> Q
     AE --> Q
 
-    E -->|"curl"| C0{"检测 curl.exe"}
-    C0 -->|"不存在"| CE["标记该包失败：未检测到 curl"]
-    C0 -->|"存在"| C1["curl 下载到 缓存名.download"]
+    E -->|"curl"| C0["搜索 curl.exe 程序入口：shims → PATH"]
+    C0 --> C0E{"找到程序入口"}
+    C0E -->|"否"| CE["标记该包失败：未检测到 curl"]
+    C0E -->|"是"| C1["curl 下载到 缓存名.download"]
     C1 --> C2{"校验是否通过"}
     C2 -->|"通过"| C3["重命名 .download 为正式缓存"]
     C2 -->|"失败"| CF["删除 .download，标记该包失败"]
     C3 --> Q
     CE --> Q
 
-    E -->|"wget"| W0{"检测 wget"}
-    W0 -->|"不存在"| WE["标记该包失败：未检测到 wget"]
-    W0 -->|"存在"| W1["wget 下载到 缓存名.download"]
+    E -->|"wget"| W0["搜索 wget.exe 程序入口：shims → PATH"]
+    W0 --> W0E{"找到程序入口"}
+    W0E -->|"否"| WE["标记该包失败：未检测到 wget"]
+    W0E -->|"是"| W1["wget 下载到 缓存名.download"]
     W1 --> W2{"校验是否通过"}
     W2 -->|"通过"| W3["重命名 .download 为正式缓存"]
     W2 -->|"失败"| WF["删除 .download，标记该包失败"]
@@ -1076,6 +1080,7 @@ flowchart TD
 
 - 后端必须显式指定：`python` / `aria2` / `curl` / `wget`，不静默切换，也不回退到其他后端；APM 层下载失败不重试。
 - 地址加速在缓存判断之后、后端选择之前执行；缓存键与哈希匹配始终使用原始 URL。镜像下载失败直接按下载失败处理，无回退、无重试。
+- 外部后端的程序入口按「`shims\<exe>` → PATH」两阶段搜索：先找 APM 生成的用户级命令入口，未安装对应应用时才使用 PATH 中的系统版本。`shims` 条目由 manifest 的 `bin` 生成，不按应用目录名或布局猜测。
 - 四种后端使用同一套流程骨架：下载 → 校验 → 通过后固化为正式缓存（aria2 额外清理 `.aria2`）；任一步失败都删除本次产生的文件并标记该包失败，不中断其他包的下载。
 - 全部下载任务结束后统一判定：只要存在失败，就终止整个安装流程，不进入阶段二；已成功下载的文件保留在 cache，供下次复用。
 - `concurrency.apps` 控制同时下载的安装包数量；`concurrency.segments` 只传给 aria2，对应 `--split` 与 `--max-connection-per-server`。python、curl、wget 的单文件并发固定为 1。
