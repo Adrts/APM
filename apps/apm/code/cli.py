@@ -23,6 +23,57 @@ SHORT_ALIASES = {
 }
 
 
+def _help_theme() -> dict[str, str]:
+    """读取 argparse 当前主题色；不可着色或旧版 Python 时返回空映射。"""
+    if not console.color:
+        return {}
+    try:
+        from _colorize import get_theme
+    except ImportError:
+        return {}
+    theme = get_theme(force_color=True).argparse
+    return {
+        "heading": theme.heading,
+        "alias": theme.action,
+        "target": theme.summary_action,
+        "label": theme.summary_label,
+        "option": theme.summary_long_option,
+        "reset": theme.reset,
+    }
+
+
+def _print_alias_help() -> None:
+    """输出根帮助底部的别名说明，配色与 argparse 自动生成的段落一致。"""
+    theme = _help_theme()
+
+    def span(kind: str, text: str) -> str:
+        code = theme.get(kind, "")
+        return f"{code}{text}{theme['reset']}" if code else text
+
+    console.plain()
+    console.plain(span("heading", "预定义短别名（不支持用户自定义）："))
+    console.plain(
+        "  "
+        f"{span('alias', 'in')} = {span('target', 'install')}    "
+        f"{span('alias', 'rm')} = {span('alias', 'remove')} = "
+        f"{span('target', 'uninstall')}    "
+        f"{span('alias', 'se')} = {span('target', 'search')}"
+    )
+    console.plain(
+        "  "
+        f"{span('alias', 'up')} = {span('target', 'update')}    "
+        f"{span('alias', 'ls')} = {span('target', 'list')}    "
+        f"{span('alias', '?')} = {span('target', 'help')}"
+    )
+    console.plain()
+    console.plain(span("heading", "参数级别名："))
+    console.plain(
+        "  除命令名外，独立参数 "
+        f"{span('label', '*')} 一律等价于 {span('option', '--all')}"
+    )
+    console.plain()
+
+
 def _expand_argv(argv: list[str]) -> list[str]:
     """在 argparse 解析前展开预定义短别名。
 
@@ -52,12 +103,6 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argument
         prog="apm",
         description="APM - Adrts package manager（兼容 Scoop bucket 的 Windows 包管理器）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "预定义短别名（不支持用户自定义）：\n"
-            "  in = install    rm = remove = uninstall    se = search\n"
-            "  up = update    ls = list    ? = help\n"
-            "参数级别名：除命令名外，独立参数 * 一律等价于 --all"
-        ),
     )
     parser.add_argument("--version", action="version", version=f"apm {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="<command>")
@@ -141,6 +186,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(_expand_argv(raw))
     if not args.command:
         parser.print_help()
+        _print_alias_help()
         return 0
     try:
         return dispatch(args, parser, parsers)
@@ -196,9 +242,11 @@ def dispatch(
             return 1
         else:
             parser.print_help()
+            _print_alias_help()
         return 0
 
     parser.print_help()
+    _print_alias_help()
     return 1
 
 

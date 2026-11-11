@@ -727,7 +727,7 @@ exit $LASTEXITCODE
 
 #### 着色规则
 
-仅在 stdout 为 TTY 且未设置 `NO_COLOR` 时启用 ANSI 颜色；不满足条件时整份输出不着色。着色范围固定如下：
+颜色启用判定与 Python 3.14 argparse 保持一致（`_colorize.can_colorize()`）：默认要求 stdout 为 TTY，并支持 `NO_COLOR` / `FORCE_COLOR` / `PYTHON_COLORS`；旧版 Python 回退为「stdout 为 TTY 且未设置 `NO_COLOR`」。着色范围固定如下：
 
 | 元素 | 样式 |
 | --- | --- |
@@ -740,6 +740,8 @@ exit $LASTEXITCODE
 | 消息正文、表格数据、路径、文件名、URL、备注内容、失败明细 | 不着色 |
 
 进度行只在 TTY 下输出，使用 `\r` 原地覆盖，结束时换行。非 TTY 下只保留常规状态行。
+
+命令行帮助由 argparse 自动着色；根帮助底部的别名说明不再写入 `epilog`，而是在 `print_help()` 后由 CLI 单独渲染，颜色取自 argparse 当前主题（`heading`、`action`、`summary_action`、`summary_label`、`summary_long_option`），避免与上半部分割裂，同时避免 ANSI 码参与 epilog 的换行宽度计算。旧版 Python 无 `_colorize` 时保持纯文本，与 argparse 的纯文本帮助一致。子命令帮助不输出别名说明。
 
 #### 文案约定
 

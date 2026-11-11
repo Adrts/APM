@@ -19,10 +19,19 @@ ITEM_INDENT = "  - "
 ITEM_CONT_INDENT = "    "
 
 
+def _color_enabled() -> bool:
+    """与 Python 3.14 argparse 使用同一套颜色启用判定。"""
+    try:
+        from _colorize import can_colorize
+    except ImportError:
+        return sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+    return can_colorize()
+
+
 class Console:
     def __init__(self) -> None:
         self.tty = sys.stdout.isatty()
-        self.color = self.tty and not os.environ.get("NO_COLOR")
+        self.color = _color_enabled()
         self._lock = threading.Lock()
 
     def _paint(self, code: str, text: str) -> str:
