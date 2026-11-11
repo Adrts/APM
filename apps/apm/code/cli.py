@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import __version__, buckets, cache, install, installed, manifest, messages as msg
-from . import query, uninstall
+from . import __version__, buckets, cache, config, install, installed, manifest
+from . import messages as msg, query, uninstall
 from .errors import ApmError
 from .known_buckets import KNOWN_BUCKETS
 from .output import console
@@ -242,6 +242,11 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argument
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        config.ensure_file()
+    except ApmError as exc:
+        console.error(str(exc))
+        return 1
     parser, parsers = build_parser()
     raw = list(sys.argv[1:]) if argv is None else list(argv)
     args = parser.parse_args(_expand_argv(raw))

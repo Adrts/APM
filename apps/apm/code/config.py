@@ -8,7 +8,7 @@ from typing import Any
 
 from . import messages as msg
 from . import paths
-from .errors import ConfigError
+from .errors import ApmError, ConfigError
 from .util import ensure_dir, write_json
 
 DEFAULTS: dict[str, Any] = {
@@ -80,18 +80,21 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return result
 
 
+def ensure_file() -> None:
+    """确保默认配置文件存在；已存在时不读取也不覆盖。"""
+    if paths.CONFIG_FILE.exists():
+        return
+    try:
+        ensure_dir(paths.CONFIG_DIR)
+        write_json(paths.CONFIG_FILE, _default_with_docs())
+    except (OSError, ApmError) as exc:
+        raise ConfigError(
+            msg.ERR_CONFIG_CREATE.format(path=paths.CONFIG_FILE, error=exc)
+        ) from exc
+
+
 def read_raw() -> dict[str, Any]:
-    if not paths.CONFIG_FILE.exists():
-        try:
-            ensure_dir(paths.CONFIG_DIR)
-            write_json(paths.CONFIG_FILE, _default_with_docs())
-        except OSError as exc:
-            raise ConfigError(
-                msg.ERR_CONFIG_CREATE.format(
-                    path=paths.CONFIG_FILE, error=exc
-                )
-            ) from exc
-        return copy.deepcopy(DEFAULTS)
+    ensure_file()
     try:
         with open(paths.CONFIG_FILE, "r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
