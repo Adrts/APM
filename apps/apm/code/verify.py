@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from . import tools
+from . import messages as msg, tools
 from .errors import VerifyError
 from .output import console
 from .util import lp
@@ -24,14 +24,16 @@ def parse_hash(value: str) -> tuple[str, str]:
         algorithm = algorithm.lower()
         digest = digest.lower()
         if algorithm not in HASH_LENGTHS:
-            raise VerifyError(f"不支持的哈希算法：{algorithm}")
+            raise VerifyError(
+                msg.ERR_HASH_ALGORITHM.format(algorithm=algorithm)
+            )
     else:
         algorithm = "sha256"
         digest = text.lower()
         if not SIXTY_FOUR_HEX.match(digest):
-            raise VerifyError(f"无法识别的哈希值：{value}")
+            raise VerifyError(msg.ERR_HASH_VALUE.format(value=value))
     if not HEX_RE.match(digest) or len(digest) != HASH_LENGTHS[algorithm]:
-        raise VerifyError(f"哈希值长度与算法不匹配：{value}")
+        raise VerifyError(msg.ERR_HASH_LENGTH.format(value=value))
     return algorithm, digest
 
 
@@ -45,7 +47,9 @@ def compute_hash(path: Path, algorithm: str) -> str:
     try:
         digest = hashlib.new(algorithm, usedforsecurity=False)
     except ValueError as exc:
-        raise VerifyError(f"不支持的哈希算法：{algorithm}") from exc
+        raise VerifyError(
+            msg.ERR_HASH_ALGORITHM.format(algorithm=algorithm)
+        ) from exc
     with open(lp(path), "rb") as fh:
         while True:
             chunk = fh.read(1024 * 1024)
@@ -80,10 +84,12 @@ def _seven_zip_test(tool: Path, path: Path) -> tuple[bool, str | None]:
     if proc.returncode == 0:
         return True, None
     if proc.returncode == 1:
-        return True, "7-Zip 警告，继续"
+        return True, msg.MSG_SEVEN_ZIP_WARNING
     if "is not archive" in lowered or "cannot open the file as archive" in lowered:
-        return True, "文件不是压缩包，跳过完整性测试"
-    return False, output.strip() or f"7z 测试失败（退出码 {proc.returncode}）"
+        return True, msg.MSG_NOT_ARCHIVE
+    return False, output.strip() or msg.ERR_SEVEN_ZIP_TEST.format(
+        code=proc.returncode
+    )
 
 
 def verify_file(
@@ -96,7 +102,7 @@ def verify_file(
     if method == "7zip":
         tool = tools.find_7z(config, "verify")
         if not tool:
-            return False, "未检测到 7z.exe，无法使用 7zip 校验方式"
+            return False, msg.ERR_SEVEN_ZIP_MISSING_VERIFY
         if not hash_value:
             ok, message = _seven_zip_test(tool, path)
             if ok and message:
@@ -108,18 +114,19 @@ def verify_file(
             return False, str(exc)
         actual = _seven_zip_hash(tool, path, algorithm)
         if actual is None:
-            return False, f"7-Zip 不支持 {algorithm.upper()} 或无法计算哈希"
+            return False, msg.ERR_SEVEN_ZIP_HASH.format(
+                algorithm=algorithm.upper()
+            )
         if actual != expected:
-            return False, (
-                f"哈希校验失败\n应用：{app_name}\n"
-                f"期望：{expected}\n实际：{actual}"
+            return False, msg.ERR_HASH_MISMATCH_NO_ALGORITHM.format(
+                app=app_name, expected=expected, actual=actual
             )
         return True, None
 
     if not hash_value:
         actual = compute_hash(path, "sha256")
         console.warn(
-            f"清单未提供 hash：{path.name}\n实际 SHA-256：{actual}"
+            msg.MSG_HASH_NOT_PROVIDED.format(file=path.name, actual=actual)
         )
         return True, None
     try:
@@ -128,8 +135,10 @@ def verify_file(
         return False, str(exc)
     actual = compute_hash(path, algorithm)
     if actual != expected:
-        return False, (
-            f"哈希校验失败\n应用：{app_name}\n"
-            f"算法：{algorithm.upper()}\n期望：{expected}\n实际：{actual}"
+        return False, msg.ERR_HASH_MISMATCH.format(
+            app=app_name,
+            algorithm=algorithm.upper(),
+            expected=expected,
+            actual=actual,
         )
     return True, None

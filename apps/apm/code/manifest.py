@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from . import buckets
+from . import buckets, messages as msg
 from .errors import ManifestError
 from .util import path_is_within, read_json, sanitary_name
 
@@ -109,7 +109,7 @@ def select_architecture(data: dict[str, Any]) -> str:
                     build = 0
             arch = "64bit" if build >= 22000 else "32bit"
     if not arch_specific(data, arch, "url"):
-        raise ManifestError(f"应用不支持当前架构（{arch}）")
+        raise ManifestError(msg.ERR_ARCH_UNSUPPORTED.format(arch=arch))
     return arch
 
 
@@ -117,11 +117,13 @@ def manifest_urls(data: dict[str, Any], arch: str) -> list[str]:
     raw = arch_specific(data, arch, "url")
     urls = [str(item) for item in normalize_list(raw) if item]
     if not urls:
-        raise ManifestError("清单中缺少 url")
+        raise ManifestError(msg.ERR_MANIFEST_NO_URL)
     for url in urls:
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https"):
-            raise ManifestError(f"不支持的下载地址（仅支持 http/https）：{url}")
+            raise ManifestError(
+                msg.ERR_MANIFEST_SCHEME.format(url=url)
+            )
     return urls
 
 
@@ -133,9 +135,11 @@ def hash_for_url(data: dict[str, Any], arch: str, urls: list[str], url: str) -> 
     try:
         index = urls.index(url)
     except ValueError as exc:
-        raise ManifestError(f"hash 对应的 URL 不在 url 列表中：{url}") from exc
+        raise ManifestError(
+            msg.ERR_MANIFEST_HASH_URL.format(url=url)
+        ) from exc
     if index >= len(hashes):
-        raise ManifestError(f"url 与 hash 数量不匹配：{url}")
+        raise ManifestError(msg.ERR_MANIFEST_HASH_COUNT.format(url=url))
     value = hashes[index]
     return str(value) if value else None
 
@@ -159,49 +163,59 @@ def manifest_dependencies(
         try:
             result.append(parse_app_spec(str(item)))
         except ManifestError as exc:
-            raise ManifestError(f"依赖格式无效：{item}（{exc}）") from exc
+            raise ManifestError(
+                msg.ERR_DEPENDENCY_FORMAT.format(item=item, error=exc)
+            ) from exc
     return result
 
 
 def parse_app_spec(spec: str) -> tuple[str | None, str, str | None]:
     raw = spec.strip().replace("\\", "/")
     if not raw:
-        raise ManifestError("应用名为空")
+        raise ManifestError(msg.ERR_APP_NAME_EMPTY)
     version: str | None = None
     if "@" in raw:
         raw, version = raw.rsplit("@", 1)
         if not version or not VERSION_RE.match(version):
-            raise ManifestError(f"版本号无效：{version}")
+            raise ManifestError(msg.ERR_VERSION_INVALID.format(version=version))
     bucket: str | None = None
     app = raw
     if "/" in raw:
         bucket, app = raw.split("/", 1)
         if not bucket or not app:
-            raise ManifestError(f"应用标识无效：{spec}")
+            raise ManifestError(msg.ERR_APP_SPEC_INVALID.format(spec=spec))
         if not re.match(r"^[\w.\-]+$", bucket):
-            raise ManifestError(f"bucket 名称无效：{bucket}")
+            raise ManifestError(
+                msg.ERR_BUCKET_NAME_FIELD_INVALID.format(bucket=bucket)
+            )
     app = sanitary_name(app)
     if not app:
-        raise ManifestError(f"应用标识无效：{spec}")
+        raise ManifestError(msg.ERR_APP_SPEC_INVALID.format(spec=spec))
     return bucket, app, version
 
 
 def validate_manifest(data: Any, app: str) -> dict[str, Any]:
     if not isinstance(data, dict):
-        raise ManifestError(f"清单必须是 JSON 对象：{app}")
+        raise ManifestError(msg.ERR_MANIFEST_NOT_OBJECT.format(app=app))
     version = data.get("version")
     if not isinstance(version, str) or not version:
-        raise ManifestError(f"清单缺少 version：{app}")
+        raise ManifestError(msg.ERR_MANIFEST_VERSION_MISSING.format(app=app))
     if version != "nightly" and not VERSION_RE.match(version):
-        raise ManifestError(f"清单的 version 格式无效：{version}")
+        raise ManifestError(
+            msg.ERR_MANIFEST_VERSION_INVALID.format(version=version)
+        )
     homepage = data.get("homepage")
     if not isinstance(homepage, str) or not homepage:
-        raise ManifestError(f"清单缺少 homepage：{app}")
+        raise ManifestError(
+            msg.ERR_MANIFEST_HOMEPAGE_MISSING.format(app=app)
+        )
     if "license" not in data:
-        raise ManifestError(f"清单缺少 license：{app}")
+        raise ManifestError(msg.ERR_MANIFEST_LICENSE_MISSING.format(app=app))
     architecture = data.get("architecture")
     if architecture is not None and not isinstance(architecture, dict):
-        raise ManifestError(f"清单的 architecture 字段格式无效：{app}")
+        raise ManifestError(
+            msg.ERR_MANIFEST_ARCH_INVALID.format(app=app)
+        )
     return data
 
 
@@ -210,15 +224,23 @@ def load_app(app: str, bucket: str | None = None, pinned_version: str | None = N
     try:
         data = validate_manifest(read_json(path), app)
     except (OSError, ValueError) as exc:
-        raise ManifestError(f"清单解析失败：{path}\n{exc}") from exc
+        raise ManifestError(
+            msg.ERR_MANIFEST_PARSE.format(path=path, error=exc)
+        ) from exc
     if pinned_version and data.get("version") != pinned_version:
         raise ManifestError(
-            f"bucket 只提供当前版本 {data.get('version')}，无法安装 {app}@{pinned_version}"
+            msg.ERR_MANIFEST_PINNED.format(
+                current=data.get("version"),
+                app=app,
+                version=pinned_version,
+            )
         )
     try:
         arch = select_architecture(data)
     except ManifestError as exc:
-        raise ManifestError(f"{app}：{exc}") from exc
+        raise ManifestError(
+            msg.ERR_MANIFEST_WRAPPED.format(app=app, error=exc)
+        ) from exc
     return AppRef(
         app=sanitary_name(app),
         bucket=bucket_name,
@@ -247,13 +269,13 @@ def parse_bin(value: Any) -> list[BinEntry]:
             name = str(item[1]) if len(item) > 1 and item[1] else Path(target).stem
             args = str(item[2]) if len(item) > 2 and item[2] is not None else ""
         else:
-            raise ManifestError(f"bin 条目格式无效：{item}")
+            raise ManifestError(msg.ERR_BIN_ENTRY.format(item=item))
         if not target:
-            raise ManifestError("bin 目标为空")
+            raise ManifestError(msg.ERR_BIN_TARGET_EMPTY)
         if not name:
-            raise ManifestError(f"bin 命令名为空：{target}")
+            raise ManifestError(msg.ERR_BIN_NAME_EMPTY.format(target=target))
         if any(sep in name for sep in ("/", "\\")):
-            raise ManifestError(f"bin 命令名不能包含路径：{name}")
+            raise ManifestError(msg.ERR_BIN_NAME_PATH.format(name=name))
         entries.append(BinEntry(target=target, name=name, args=args))
     return entries
 
@@ -262,13 +284,13 @@ def parse_shortcuts(value: Any) -> list[ShortcutEntry]:
     entries: list[ShortcutEntry] = []
     for item in normalize_list(value):
         if not isinstance(item, list) or len(item) < 2:
-            raise ManifestError(f"shortcuts 条目格式无效：{item}")
+            raise ManifestError(msg.ERR_SHORTCUT_ENTRY.format(item=item))
         target = str(item[0])
         name = str(item[1])
         args = str(item[2]) if len(item) > 2 and item[2] is not None else ""
         icon = str(item[3]) if len(item) > 3 and item[3] is not None else None
         if not target or not name:
-            raise ManifestError(f"shortcuts 条目缺少目标或名称：{item}")
+            raise ManifestError(msg.ERR_SHORTCUT_MISSING.format(item=item))
         entries.append(ShortcutEntry(target=target, name=name, args=args, icon=icon))
     return entries
 
@@ -283,9 +305,9 @@ def parse_persist(value: Any) -> list[tuple[str, str]]:
             source = str(item[0])
             target = str(item[1]) if len(item) > 1 and item[1] else item[0]
         else:
-            raise ManifestError(f"persist 条目格式无效：{item}")
+            raise ManifestError(msg.ERR_PERSIST_ENTRY.format(item=item))
         if not source:
-            raise ManifestError("persist 源路径为空")
+            raise ManifestError(msg.ERR_PERSIST_SOURCE_EMPTY)
         entries.append((source, target))
     return entries
 
@@ -303,7 +325,7 @@ def installer_of(ref: AppRef) -> dict[str, Any] | None:
     if raw is None:
         return None
     if not isinstance(raw, dict):
-        raise ManifestError(f"installer 字段格式无效：{ref.app}")
+        raise ManifestError(msg.ERR_INSTALLER_FORMAT.format(app=ref.app))
     return raw
 
 
@@ -312,7 +334,7 @@ def uninstaller_of(ref: AppRef) -> dict[str, Any] | None:
     if raw is None:
         return None
     if not isinstance(raw, dict):
-        raise ManifestError(f"uninstaller 字段格式无效：{ref.app}")
+        raise ManifestError(msg.ERR_UNINSTALLER_FORMAT.format(app=ref.app))
     return raw
 
 
@@ -325,7 +347,7 @@ def env_set_values(ref: AppRef) -> dict[str, str]:
     if raw is None:
         return {}
     if not isinstance(raw, dict):
-        raise ManifestError(f"env_set 字段格式无效：{ref.app}")
+        raise ManifestError(msg.ERR_ENV_SET_FORMAT.format(app=ref.app))
     return {str(key): str(value) for key, value in raw.items()}
 
 
@@ -349,6 +371,13 @@ def license_text(value: Any) -> str:
 
 def remote_filename(url: str) -> str:
     parsed = urlparse(url)
+    fragment = unquote(parsed.fragment)
+    # Scoop 约定：fragment 以 / 开头时表示保存文件名，例如
+    # https://curl.se/ca/cacert-2026-11-05.pem#/cacert.pem
+    if fragment.startswith("/"):
+        renamed = Path(fragment.lstrip("/")).name
+        if renamed:
+            return renamed
     name = unquote(Path(parsed.path).name)
     if not name:
         name = unquote(parsed.fragment.strip("/#")) or "download"
@@ -374,8 +403,12 @@ def url_extension(url: str) -> str:
 def ensure_inside(base: Path, relative: str, field: str) -> Path:
     rel_path = Path(relative)
     if rel_path.is_absolute() or rel_path.drive or ".." in rel_path.parts:
-        raise ManifestError(f"{field} 路径越界：{relative}")
+        raise ManifestError(
+            msg.ERR_FIELD_OUTSIDE.format(field=field, relative=relative)
+        )
     target = Path(os.path.normpath(str(base / rel_path)))
     if not path_is_within(base, target):
-        raise ManifestError(f"{field} 路径越界：{relative}")
+        raise ManifestError(
+            msg.ERR_FIELD_OUTSIDE.format(field=field, relative=relative)
+        )
     return target

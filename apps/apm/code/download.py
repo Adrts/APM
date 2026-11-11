@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urldefrag, urlparse
 
-from . import cache, paths, tools, verify
+from . import cache, messages as msg, paths, tools, verify
 from .errors import DownloadError
 from .manifest import AppRef
 from .output import console
@@ -82,8 +82,9 @@ def _warn_mirror(provider: str) -> None:
             return
         _warned_mirrors.add(provider)
     console.warn(
-        f"未配置 {provider} 镜像前缀，按原始地址下载"
-        f"（可在 {paths.CONFIG_FILE} 中设置 download.mirror.{provider}）"
+        msg.MSG_MIRROR_NOT_CONFIGURED.format(
+            provider=provider, config=paths.CONFIG_FILE
+        )
     )
 
 
@@ -152,19 +153,28 @@ def _python_download(
             if callback:
                 console.progress(f"{label} 100%", final=True)
     except urllib.error.HTTPError as exc:
-        raise DownloadError(f"HTTP {exc.code}：{url}") from exc
+        raise DownloadError(msg.ERR_HTTP.format(code=exc.code, url=url)) from exc
     except urllib.error.URLError as exc:
-        raise DownloadError(f"网络错误：{exc.reason}（{url}）") from exc
+        raise DownloadError(
+            msg.ERR_NETWORK.format(reason=exc.reason, url=url)
+        ) from exc
     except OSError as exc:
-        raise DownloadError(f"写入失败：{exc}") from exc
+        raise DownloadError(msg.ERR_WRITE_FAILED.format(error=exc)) from exc
 
 
-def _run_backend(cmd: list[str], url: str) -> None:
+def _run_backend(cmd: list[str], url: str, backend: str) -> None:
     proc = tools.run_tool(cmd)
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()
+        lowered = detail.lower()
+        if backend == "wget" and (
+            "certificate" in lowered or "unable to locally verify" in lowered
+        ):
+            raise DownloadError(msg.ERR_TLS_CERTIFICATE.format(detail=detail))
         raise DownloadError(
-            f"下载失败（退出码 {proc.returncode}）：{url}\n{detail}".strip()
+            msg.ERR_DOWNLOAD_EXIT.format(
+                code=proc.returncode, url=url, detail=detail
+            )
         )
 
 
@@ -187,7 +197,7 @@ def _curl_download(url: str, dest: Path, cookie: str | None, curl: Path) -> None
     if cookie:
         cmd.extend(["--header", f"Cookie: {cookie}"])
     cmd.append(_request_url(url))
-    _run_backend(cmd, url)
+    _run_backend(cmd, url, "curl")
 
 
 def _wget_download(url: str, dest: Path, cookie: str | None, wget: Path) -> None:
@@ -203,7 +213,7 @@ def _wget_download(url: str, dest: Path, cookie: str | None, wget: Path) -> None
     if cookie:
         cmd.append(f"--header=Cookie: {cookie}")
     cmd.append(_request_url(url))
-    _run_backend(cmd, url)
+    _run_backend(cmd, url, "wget")
 
 
 def _aria2_download(
@@ -241,7 +251,7 @@ def _aria2_download(
     if cookie:
         cmd.extend(["--header", f"Cookie: {cookie}"])
     cmd.append(_request_url(url))
-    _run_backend(cmd, url)
+    _run_backend(cmd, url, "aria2")
 
 
 def _backend_name(config: dict[str, Any]) -> str:
@@ -256,21 +266,32 @@ def _download_one(
 ) -> DownloadResult:
     backend = _backend_name(config)
     cookie = _cookie_header(item.cookie)
-    label = f"下载 {item.app} {item.version}（{item.path.name}）"
+    label = msg.MSG_DOWNLOAD_PROGRESS_LABEL.format(
+        app=item.app, version=item.version, file=item.path.name
+    )
     ensure_dir(item.path.parent)
     tmp = item.path.with_name(item.path.name + ".download")
 
     try:
         if cache_hit:
-            console.info(f"使用缓存 {item.path.name}")
+            console.info(msg.MSG_USE_CACHE.format(file=item.path.name))
             ok, message = verify.verify_file(item.path, item.hash, config, item.app)
             if ok:
                 return DownloadResult(item=item, ok=True)
-            console.warn(f"缓存校验失败，重新下载：{item.path.name}\n{message or ''}")
+            console.warn(
+                msg.MSG_CACHE_INVALID.format(
+                    file=item.path.name, detail=message or ""
+                )
+            )
             _purge(item.path)
 
         transport = transport_url(item.url, config)
-        console.info(f"下载 {item.path.name}" + ("（镜像）" if transport != item.url else ""))
+        if transport != item.url:
+            console.info(
+                msg.MSG_DOWNLOAD_MIRROR.format(file=item.path.name)
+            )
+        else:
+            console.info(msg.MSG_DOWNLOAD.format(file=item.path.name))
 
         if backend == "python":
             if tmp.exists():
@@ -280,7 +301,7 @@ def _download_one(
         elif backend == "curl":
             curl = tools.find_backend("curl")
             if not curl:
-                raise DownloadError("未检测到 curl.exe")
+                raise DownloadError(msg.ERR_CURL_MISSING)
             if tmp.exists():
                 remove_path(tmp)
             _curl_download(transport, tmp, cookie, curl)
@@ -288,7 +309,7 @@ def _download_one(
         elif backend == "wget":
             wget = tools.find_backend("wget")
             if not wget:
-                raise DownloadError("未检测到 wget.exe")
+                raise DownloadError(msg.ERR_WGET_MISSING)
             if tmp.exists():
                 remove_path(tmp)
             _wget_download(transport, tmp, cookie, wget)
@@ -296,19 +317,23 @@ def _download_one(
         elif backend == "aria2":
             aria2 = tools.find_backend("aria2")
             if not aria2:
-                raise DownloadError("未检测到 aria2c.exe")
+                raise DownloadError(msg.ERR_ARIA2_MISSING)
             segments = int(
                 config.get("download", {}).get("concurrency", {}).get("segments", 5)
             )
             _aria2_download(transport, item.path, cookie, aria2, segments)
             target = item.path
         else:
-            raise DownloadError(f"未知的下载后端：{backend}")
+            raise DownloadError(
+                msg.ERR_BACKEND_UNKNOWN.format(backend=backend)
+            )
 
         ok, message = verify.verify_file(target, item.hash, config, item.app)
         if not ok:
             _purge(item.path if target == item.path else tmp)
-            return DownloadResult(item=item, ok=False, error=message or "校验失败")
+            return DownloadResult(
+                item=item, ok=False, error=message or msg.ERR_VERIFY_FAILED
+            )
 
         if target == tmp:
             os.replace(lp(tmp), lp(item.path))
@@ -316,7 +341,7 @@ def _download_one(
             control = Path(str(item.path) + ".aria2")
             if control.exists():
                 remove_path(control)
-        console.success(f"已下载 {item.path.name}")
+        console.success(msg.MSG_DOWNLOADED.format(file=item.path.name))
         return DownloadResult(item=item, ok=True)
     except Exception as exc:  # noqa: BLE001 - failures are reported per item
         _purge(tmp if tmp.exists() else item.path)

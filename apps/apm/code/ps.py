@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from . import paths
+from . import messages as msg, paths
 from .errors import InstallError, ToolError
 from .output import console
 from .util import split_windows_args
@@ -19,7 +19,7 @@ def find_powershell() -> str:
         found = shutil.which(name)
         if found:
             return found
-    raise ToolError("未检测到 PowerShell，无法执行安装脚本")
+    raise ToolError(msg.ERR_POWERSHELL_MISSING)
 
 
 def _quote(value: Any) -> str:
@@ -40,6 +40,25 @@ function Apm-BroadcastEnvironment {
     }
     $result = [UIntPtr]::Zero
     [Apm.EnvBroadcast]::SendMessageTimeout([IntPtr]0xFFFF, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$result) | Out-Null
+}
+
+function appdir($app, $global = $false) {
+    if ($global) { throw 'APM 仅支持用户级安装，appdir 不支持 -Global' }
+    if ($app -eq 'scoop' -or $app -eq 'apm') { return $scoopdir }
+    return Join-Path $scoopdir "apps\$app"
+}
+
+function versiondir($app, $version, $global = $false) {
+    return Join-Path (appdir $app $global) $version
+}
+
+function currentdir($app, $global = $false) {
+    return Join-Path (appdir $app $global) 'current'
+}
+
+function persistdir($app, $global = $false) {
+    if ($global) { throw 'APM 仅支持用户级安装，persistdir 不支持 -Global' }
+    return Join-Path $scoopdir "persist\$app"
 }
 
 function Add-Path {
@@ -206,12 +225,15 @@ def run_hook(
         f"$manifest = Get-Content -LiteralPath {_quote(manifest_path)} -Raw -Encoding UTF8 | ConvertFrom-Json",
         body,
     ]
-    console.info(f"执行 {hook_type} 脚本")
+    hook_name = msg.HOOK_NAMES.get(hook_type, hook_type)
+    console.info(msg.MSG_HOOK_RUNNING.format(hook=hook_name))
     proc = run_script("\r\n".join(prelude), cwd=original_dir)
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()
         raise InstallError(
-            f"{hook_type} 脚本执行失败（退出码 {proc.returncode}）\n{detail}"
+            msg.ERR_HOOK_FAILED.format(
+                hook=hook_name, code=proc.returncode, detail=detail
+            )
         )
 
 
@@ -223,7 +245,7 @@ def run_installer(
     context: dict[str, Any],
 ) -> None:
     if not executable.is_file():
-        raise InstallError(f"安装器不存在：{executable}")
+        raise InstallError(msg.ERR_INSTALLER_MISSING.format(path=executable))
     suffix = executable.suffix.lower()
     if suffix == ".ps1":
         prelude = [
@@ -276,5 +298,9 @@ def run_installer(
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()
         raise InstallError(
-            f"安装器执行失败（退出码 {proc.returncode}）：{executable.name}\n{detail}"
+            msg.ERR_INSTALLER_FAILED.format(
+                code=proc.returncode,
+                name=executable.name,
+                detail=detail,
+            )
         )

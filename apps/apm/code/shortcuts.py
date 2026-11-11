@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import paths, ps
+from . import messages as msg, paths, ps
 from .errors import ApmError
 from .output import console
 from .util import ensure_dir, path_is_within, remove_path
@@ -17,14 +17,14 @@ def _quote(value: str) -> str:
 def shortcut_path(app: str, name: str) -> Path:
     relative = Path(name.replace("\\", "/"))
     if relative.is_absolute() or ".." in relative.parts:
-        raise ApmError(f"快捷方式名称无效：{name}")
+        raise ApmError(msg.ERR_SHORTCUT_NAME.format(name=name))
     filename = relative.name
     if not filename.lower().endswith(".lnk"):
         filename += ".lnk"
     base = paths.START_MENU_APPS / app
     result = base / relative.parent / filename
     if not path_is_within(base, result):
-        raise ApmError(f"快捷方式路径越界：{name}")
+        raise ApmError(msg.ERR_SHORTCUT_OUTSIDE.format(name=name))
     return result
 
 
@@ -36,10 +36,10 @@ def create(
     icon: Path | None = None,
 ) -> bool:
     if not target.is_file():
-        console.warn(f"创建快捷方式失败（目标不存在）：{target}")
+        console.warn(msg.MSG_SHORTCUT_TARGET_MISSING.format(path=target))
         return False
     if icon is not None and not icon.is_file():
-        console.warn(f"创建快捷方式失败（图标不存在）：{icon}")
+        console.warn(msg.MSG_SHORTCUT_ICON_MISSING.format(path=icon))
         return False
     link = shortcut_path(app, name)
     ensure_dir(link.parent)
@@ -58,9 +58,9 @@ def create(
     proc = ps.run_script("\r\n".join(lines))
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()
-        console.warn(f"创建快捷方式失败：{name}\n{detail}")
+        console.warn(msg.ERR_SHORTCUT_FAILED.format(name=name, detail=detail))
         return False
-    console.info(f"创建快捷方式 {name}")
+    console.info(msg.MSG_SHORTCUT_CREATED.format(name=name))
     return True
 
 

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import paths
+from . import messages as msg, paths
 from .errors import ApmError
 from .util import is_reparse_dir, read_json, write_json
 
@@ -69,10 +69,10 @@ def is_installed(app: str) -> bool:
 def set_hold(app: str, hold: bool) -> bool:
     """Set the hold flag of an installed app; return True when the state changed."""
     if not is_installed(app):
-        raise ApmError(f"应用未安装：{app}")
+        raise ApmError(msg.MSG_APP_NOT_INSTALLED.format(app=app))
     meta = read_meta(app)
     if meta is None:
-        raise ApmError(f"{app} 缺少安装记录，无法修改锁定状态")
+        raise ApmError(msg.ERR_APP_RECORD_MISSING.format(app=app))
     if bool(meta.get("hold")) == hold:
         return False
     meta["hold"] = hold

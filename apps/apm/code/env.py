@@ -6,6 +6,7 @@ import ctypes
 import os
 from typing import Iterable
 
+from . import messages as msg
 from .errors import ApmError
 
 try:
@@ -18,7 +19,7 @@ ENV_KEY = r"Environment"
 
 def _require_registry():
     if winreg is None:
-        raise ApmError("环境变量操作仅在 Windows 上可用")
+        raise ApmError(msg.ERR_ENV_WINDOWS)
 
 
 def _read_value(name: str) -> tuple[str | None, int | None]:
@@ -30,7 +31,9 @@ def _read_value(name: str) -> tuple[str | None, int | None]:
     except FileNotFoundError:
         return None, None
     except OSError as exc:
-        raise ApmError(f"读取环境变量 {name} 失败：{exc}") from exc
+        raise ApmError(
+            msg.ERR_ENV_READ.format(name=name, error=exc)
+        ) from exc
 
 
 def _write_value(name: str, value: str, value_type: int) -> None:
@@ -41,7 +44,9 @@ def _write_value(name: str, value: str, value_type: int) -> None:
         ) as key:
             winreg.SetValueEx(key, name, 0, value_type, value)
     except OSError as exc:
-        raise ApmError(f"写入环境变量 {name} 失败：{exc}") from exc
+        raise ApmError(
+            msg.ERR_ENV_WRITE.format(name=name, error=exc)
+        ) from exc
 
 
 def _delete_value(name: str) -> None:
@@ -54,7 +59,9 @@ def _delete_value(name: str) -> None:
     except FileNotFoundError:
         pass
     except OSError as exc:
-        raise ApmError(f"删除环境变量 {name} 失败：{exc}") from exc
+        raise ApmError(
+            msg.ERR_ENV_DELETE.format(name=name, error=exc)
+        ) from exc
 
 
 def _split_path(value: str) -> list[str]:

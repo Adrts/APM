@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from . import env, installed, manifest, paths, ps, shortcuts
+from . import env, installed, manifest, messages as msg, paths, ps, shortcuts
 from .errors import ApmError, UninstallError
 from .manifest import AppRef
 from .output import console
@@ -20,9 +20,9 @@ def uninstall_apps(specs: list[str], purge: bool = False) -> int:
         try:
             _uninstall_one(app, purge)
         except ApmError as exc:
-            failures.append(f"{app}：{exc}")
+            failures.append(msg.ERR_ITEM.format(name=app, error=exc))
         except Exception as exc:  # noqa: BLE001
-            failures.append(f"{app}：{exc}")
+            failures.append(msg.ERR_ITEM.format(name=app, error=exc))
     if failures:
         console.failure_list(failures)
         return 1
@@ -66,9 +66,9 @@ def _hook_names(ref: AppRef) -> list[str]:
 
 def _uninstall_one(app: str, purge: bool) -> None:
     if app.lower() == "apm":
-        raise UninstallError("不能卸载 APM 自身")
+        raise UninstallError(msg.MSG_UNINSTALL_APM)
     if not installed.is_installed(app):
-        raise UninstallError(f"应用未安装：{app}")
+        raise UninstallError(msg.MSG_APP_NOT_INSTALLED.format(app=app))
 
     meta = installed.read_meta(app) or {}
     ref = _load_ref(app, meta)
@@ -97,7 +97,7 @@ def _uninstall_one(app: str, purge: bool) -> None:
         if uninstaller.get("file") or uninstaller.get("args"):
             file_name = uninstaller.get("file") or (filenames[0] if filenames else "")
             if not file_name:
-                raise UninstallError("uninstaller 缺少 file，且没有可用的下载文件名")
+                raise UninstallError(msg.ERR_UNINSTALLER_NO_FILE)
             executable = manifest.ensure_inside(
                 current, str(file_name), "uninstaller.file"
             )
@@ -150,9 +150,9 @@ def _uninstall_one(app: str, purge: bool) -> None:
 
     if purge:
         remove_path(paths.persist_app_dir(app))
-        console.info(f"已删除 persist 数据：{app}")
+        console.info(msg.MSG_PERSIST_PURGED.format(app=app))
     else:
-        console.info(f"保留 persist 数据：{persist_dir}")
+        console.info(msg.MSG_PERSIST_KEPT.format(path=persist_dir))
 
     for file_path in (
         installed.meta_path(app),
@@ -166,7 +166,7 @@ def _uninstall_one(app: str, purge: bool) -> None:
             app_root.rmdir()
     except OSError:
         pass
-    console.success(f"已卸载 {app}")
+    console.success(msg.MSG_UNINSTALLED.format(app=app))
 
 
 def _remove_shortcuts(app: str, meta: dict[str, Any], ref: AppRef) -> None:
@@ -201,7 +201,7 @@ def _remove_bins(app: str, meta: dict[str, Any]) -> None:
         if existing:
             for variant in existing:
                 remove_path(variant)
-            console.info(f"移除命令入口 {name}")
+            console.info(msg.MSG_REMOVE_SHIM.format(name=name))
 
 
 def _remove_env(

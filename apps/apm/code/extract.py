@@ -15,7 +15,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable
 
-from . import tools
+from . import messages as msg, tools
 from .errors import ExtractError
 from .manifest import url_extension
 from .output import console
@@ -71,29 +71,29 @@ def needs_extraction(url: str, innosetup: bool = False) -> bool:
 def _check_name(name: str) -> Path:
     normalized = name.replace("\\", "/")
     if normalized.startswith("/") or re.match(r"^[A-Za-z]:", normalized):
-        raise ExtractError(f"拒绝绝对路径条目：{name}")
+        raise ExtractError(msg.ERR_EXTRACT_ABSOLUTE.format(name=name))
     parts: list[str] = []
     for part in normalized.split("/"):
         if part in ("", "."):
             continue
         if part == "..":
-            raise ExtractError(f"拒绝越界路径条目：{name}")
+            raise ExtractError(msg.ERR_EXTRACT_TRAVERSAL.format(name=name))
         if any(char in INVALID_CHARS for char in part):
-            raise ExtractError(f"路径包含非法字符：{name}")
+            raise ExtractError(msg.ERR_EXTRACT_INVALID_CHAR.format(name=name))
         if part.endswith((" ", ".")):
-            raise ExtractError(f"路径以空格或点结尾：{name}")
+            raise ExtractError(msg.ERR_EXTRACT_TRAILING.format(name=name))
         if part.split(".")[0].upper() in RESERVED_NAMES:
-            raise ExtractError(f"路径包含 Windows 保留名：{name}")
+            raise ExtractError(msg.ERR_EXTRACT_RESERVED.format(name=name))
         parts.append(part)
     if not parts:
-        raise ExtractError(f"空路径条目：{name}")
+        raise ExtractError(msg.ERR_EXTRACT_EMPTY.format(name=name))
     return Path(*parts)
 
 
 def _target(dest: Path, name: str) -> Path:
     result = dest.joinpath(_check_name(name))
     if not path_is_within(dest, result):
-        raise ExtractError(f"路径越界：{name}")
+        raise ExtractError(msg.ERR_EXTRACT_OUTSIDE.format(name=name))
     return result
 
 
@@ -140,11 +140,19 @@ def _extract_zip(archive: Path, dest: Path) -> None:
                 link_name = zf.read(info).decode("utf-8", errors="replace")
                 link_target = (target.parent / link_name).resolve()
                 if os.path.isabs(link_name) or not path_is_within(dest, link_target):
-                    raise ExtractError(f"拒绝越界符号链接：{name} -> {link_name}")
+                    raise ExtractError(
+                        msg.ERR_EXTRACT_SYMLINK_OUTSIDE.format(
+                            name=name, target=link_name
+                        )
+                    )
                 try:
                     os.symlink(link_name, target)
                 except OSError as exc:
-                    raise ExtractError(f"无法创建符号链接：{name}（{exc}）") from exc
+                    raise ExtractError(
+                        msg.ERR_EXTRACT_SYMLINK_FAILED.format(
+                            name=name, error=exc
+                        )
+                    ) from exc
                 continue
             with zf.open(info) as source, open(lp(target), "wb") as output:
                 shutil.copyfileobj(source, output, length=1024 * 1024)
@@ -171,11 +179,19 @@ def _safe_tar_members(tf: tarfile.TarFile, dest: Path) -> list[tarfile.TarInfo]:
             link = member.linkname
             link_target = (target.parent / link).resolve()
             if os.path.isabs(link) or not path_is_within(dest, link_target):
-                raise ExtractError(f"拒绝越界链接：{member.name} -> {link}")
+                raise ExtractError(
+                    msg.ERR_EXTRACT_LINK_OUTSIDE.format(
+                        name=member.name, target=link
+                    )
+                )
         elif member.islnk():
             source = dest / _check_name(member.linkname)
             if not path_is_within(dest, source):
-                raise ExtractError(f"拒绝越界硬链接：{member.name} -> {member.linkname}")
+                raise ExtractError(
+                    msg.ERR_EXTRACT_HARDLINK_OUTSIDE.format(
+                        name=member.name, target=member.linkname
+                    )
+                )
         members.append(member)
     return members
 
@@ -196,7 +212,11 @@ def _extract_tar(archive: Path, dest: Path) -> None:
                 if member.isreg():
                     source = tf.extractfile(member)
                     if source is None:
-                        raise ExtractError(f"无法读取归档条目：{member.name}")
+                        raise ExtractError(
+                            msg.ERR_EXTRACT_ENTRY_UNREADABLE.format(
+                                name=member.name
+                            )
+                        )
                     with source, open(lp(target), "wb") as output:
                         shutil.copyfileobj(source, output, length=1024 * 1024)
                 elif member.issym():
@@ -204,12 +224,18 @@ def _extract_tar(archive: Path, dest: Path) -> None:
                         os.symlink(member.linkname, target)
                     except OSError as exc:
                         raise ExtractError(
-                            f"无法创建符号链接：{member.name}（{exc}）"
+                            msg.ERR_EXTRACT_SYMLINK_FAILED.format(
+                                name=member.name, error=exc
+                            )
                         ) from exc
                 elif member.islnk():
                     source = staging / _check_name(member.linkname)
                     if not source.exists():
-                        raise ExtractError(f"硬链接源不存在：{member.linkname}")
+                        raise ExtractError(
+                            msg.ERR_EXTRACT_HARDLINK_MISSING.format(
+                                target=member.linkname
+                            )
+                        )
                     os.link(lp(source), lp(target))
         _merge_move(staging, dest)
     finally:
@@ -228,7 +254,7 @@ def _extract_single(archive: Path, dest: Path) -> None:
         opener = lzma.open
         output_name = archive.name[:-3]
     else:
-        raise ExtractError(f"不支持的压缩格式：{archive.name}")
+        raise ExtractError(msg.ERR_EXTRACT_UNSUPPORTED.format(name=archive.name))
     ensure_dir(dest)
     output = dest / (output_name or "output")
     tmp = output.with_name(output.name + ".tmp")
@@ -257,7 +283,9 @@ def _seven_zip_extract(archive: Path, dest: Path, seven_zip: Path) -> None:
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()
         raise ExtractError(
-            f"7-Zip 解压失败：{archive.name}（退出码 {proc.returncode}）\n{detail}"
+            msg.ERR_EXTRACT_7Z.format(
+                name=archive.name, code=proc.returncode, detail=detail
+            )
         )
 
 
@@ -288,7 +316,9 @@ def _extract_msi(archive: Path, dest: Path) -> None:
         if proc.returncode != 0:
             detail = (proc.stderr or proc.stdout or "").strip()
             raise ExtractError(
-                f"MSI 解包失败：{archive.name}（退出码 {proc.returncode}）\n{detail}"
+                msg.ERR_EXTRACT_MSI.format(
+                    name=archive.name, code=proc.returncode, detail=detail
+                )
             )
         source_dir = staging / "SourceDir"
         _merge_move(source_dir if source_dir.is_dir() else staging, dest)
@@ -304,7 +334,9 @@ def _extract_inno(archive: Path, dest: Path, innounp: Path) -> None:
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()
         raise ExtractError(
-            f"innounp 解包失败：{archive.name}（退出码 {proc.returncode}）\n{detail}"
+            msg.ERR_EXTRACT_INNOUNP.format(
+                name=archive.name, code=proc.returncode, detail=detail
+            )
         )
 
 
@@ -329,7 +361,9 @@ def _dispatch(
         if extension == ".001":
             parts = list(archive.parent.glob(archive.stem + ".???"))
             if len(parts) < 1:
-                raise ExtractError(f"分卷压缩包缺少分卷：{archive.name}")
+                raise ExtractError(
+                    msg.ERR_EXTRACT_VOLUME.format(name=archive.name)
+                )
         seven_zip = tools.require_7z(config)
         if name.endswith(".tar.zst"):
             _seven_zip_tar(archive, dest, seven_zip)
@@ -344,7 +378,9 @@ def _dispatch(
             seven_zip = tools.find_7z(config)
             if not seven_zip:
                 raise
-            console.warn(f"标准库解压失败，改用 7-Zip：{archive.name}")
+            console.warn(
+                msg.MSG_STDLIB_FALLBACK.format(file=archive.name)
+            )
             _seven_zip_tar(archive, dest, seven_zip)
         return
 
@@ -355,7 +391,9 @@ def _dispatch(
             seven_zip = tools.find_7z(config)
             if not seven_zip:
                 raise
-            console.warn(f"标准库解压失败，改用 7-Zip：{archive.name}")
+            console.warn(
+                msg.MSG_STDLIB_FALLBACK.format(file=archive.name)
+            )
             _seven_zip_extract(archive, dest, seven_zip)
         return
 
@@ -385,7 +423,9 @@ def extract_package(
             _dispatch(archive, staging, innosetup, config)
             source = safe_child(staging, *Path(extract_dir.replace("\\", "/")).parts)
             if not source.exists():
-                raise ExtractError(f"extract_dir 不存在：{extract_dir}")
+                raise ExtractError(
+                    msg.ERR_EXTRACT_DIR.format(dir=extract_dir)
+                )
             _merge_move(source, dest)
         finally:
             remove_path(staging)

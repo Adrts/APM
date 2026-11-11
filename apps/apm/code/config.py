@@ -6,6 +6,7 @@ import copy
 import json
 from typing import Any
 
+from . import messages as msg
 from . import paths
 from .errors import ConfigError
 from .util import ensure_dir, write_json
@@ -36,24 +37,7 @@ BACKENDS = ("python", "aria2", "curl", "wget")
 VERIFY_METHODS = ("hashlib", "7zip")
 
 # 每个选项的说明，生成默认配置时以「键#」旁车字段写入（JSON 不支持注释）。
-OPTION_DOCS: dict[str, str] = {
-    "download.backend": "下载后端，必须为 python / aria2 / curl / wget 之一，其他值直接报错。"
-    "aria2 支持多连接分片下载，其余后端为单连接顺序下载",
-    "download.concurrency.apps": "同时下载的应用数量上限",
-    "download.concurrency.segments": "单个文件的分片并发连接数，仅 aria2 后端生效，其余后端按 1 处理",
-    "download.mirror.github": "GitHub 加速前缀，留空表示直连（下载时提示一次）。"
-    "填写后 GitHub 下载地址改写为「前缀 + 原始地址」，例如 https://mirror.example.com/ ，"
-    "用于绕过网络对 GitHub 的限速",
-    "download.mirror.sourceforge": "SourceForge 加速前缀，留空表示直连。填写后改写规则同上",
-    "verify.method": "校验方式：hashlib（Python 标准库计算哈希并比对清单的 hash）/ "
-    "7zip（调用 7z.exe 计算哈希，清单无 hash 时顺带做压缩包完整性测试）",
-    "verify.seven_zip": "7z.exe 完整路径，留空表示按「本配置项 → PATH → apps 下已安装的 7zip」顺序查找。"
-    "仅 verify.method 为 7zip 时使用",
-    "extract.seven_zip": "7z.exe 完整路径，留空表示按「本配置项 → PATH → apps 下已安装的 7zip」顺序查找。"
-    "zip/7z/rar/iso 等归档解压时优先使用；缺失时 zip/tar 回退标准库解压，其余格式直接报错",
-    "extract.innounp": "innounp.exe 完整路径，留空表示按「本配置项 → PATH → apps 下已安装的 innounp」顺序查找。"
-    "清单标记 innosetup 的 .exe 安装包解包必需，缺失直接报错",
-}
+OPTION_DOCS = msg.CONFIG_DOCS
 
 
 def _default_with_docs() -> dict[str, Any]:
@@ -103,16 +87,31 @@ def read_raw() -> dict[str, Any]:
             write_json(paths.CONFIG_FILE, _default_with_docs())
         except OSError as exc:
             raise ConfigError(
-                f"无法创建默认配置文件 {paths.CONFIG_FILE}：{exc}"
+                msg.ERR_CONFIG_CREATE.format(
+                    path=paths.CONFIG_FILE, error=exc
+                )
             ) from exc
         return copy.deepcopy(DEFAULTS)
     try:
         with open(paths.CONFIG_FILE, "r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
+    except json.JSONDecodeError as exc:
+        raise ConfigError(
+            msg.ERR_CONFIG_JSON.format(
+                path=paths.CONFIG_FILE,
+                line=exc.lineno,
+                column=exc.colno,
+                error=exc.msg,
+            )
+        ) from exc
     except (OSError, ValueError) as exc:
-        raise ConfigError(f"无法读取配置文件 {paths.CONFIG_FILE}：{exc}") from exc
+        raise ConfigError(
+            msg.ERR_CONFIG_READ.format(path=paths.CONFIG_FILE, error=exc)
+        ) from exc
     if not isinstance(data, dict):
-        raise ConfigError(f"配置文件格式错误（顶层必须是对象）：{paths.CONFIG_FILE}")
+        raise ConfigError(
+            msg.ERR_CONFIG_TOP_LEVEL.format(path=paths.CONFIG_FILE)
+        )
     return data
 
 
@@ -126,7 +125,7 @@ def load() -> dict[str, Any]:
 def _validate(node: Any, defaults: dict[str, Any], prefix: str) -> None:
     if not isinstance(node, dict):
         name = prefix or "<root>"
-        raise ConfigError(f"配置项 {name} 必须是对象")
+        raise ConfigError(msg.ERR_CONFIG_SECTION.format(name=name))
     for key, default in defaults.items():
         if key not in node:
             continue
@@ -137,23 +136,25 @@ def _validate(node: Any, defaults: dict[str, Any], prefix: str) -> None:
             continue
         if isinstance(default, bool):
             if not isinstance(value, bool):
-                raise ConfigError(f"配置项 {path} 必须是布尔值")
+                raise ConfigError(msg.ERR_CONFIG_BOOL.format(path=path))
             continue
         if isinstance(default, int):
             if isinstance(value, bool) or not isinstance(value, int):
-                raise ConfigError(f"配置项 {path} 必须是整数")
+                raise ConfigError(msg.ERR_CONFIG_INT.format(path=path))
             if value < 1:
-                raise ConfigError(f"配置项 {path} 必须大于等于 1")
+                raise ConfigError(msg.ERR_CONFIG_POSITIVE.format(path=path))
             continue
         if not isinstance(value, str):
-            raise ConfigError(f"配置项 {path} 必须是字符串")
+            raise ConfigError(msg.ERR_CONFIG_STRING.format(path=path))
         if path == "download.backend" and value not in BACKENDS:
             raise ConfigError(
-                f"配置项 download.backend 取值无效：{value}"
-                f"（可选：{' / '.join(BACKENDS)}）"
+                msg.ERR_CONFIG_BACKEND.format(
+                    value=value, choices=" / ".join(BACKENDS)
+                )
             )
         if path == "verify.method" and value not in VERIFY_METHODS:
             raise ConfigError(
-                f"配置项 verify.method 取值无效：{value}"
-                f"（可选：{' / '.join(VERIFY_METHODS)}）"
+                msg.ERR_CONFIG_VERIFY.format(
+                    value=value, choices=" / ".join(VERIFY_METHODS)
+                )
             )

@@ -141,6 +141,7 @@ APM 不修改 bucket 中的 manifest，解析层负责把 Scoop 的字段语义�
 | `tools.py` | 7-Zip / innounp / 下载后端的外部工具查找 |
 | `query.py` | list、search、info、status、cleanup |
 | `output.py` | 统一 `[apm]` 前缀、着色、表头/汇总、失败清单与进度行 |
+| `messages.py` | 全部用户可见文案、argparse 中文帮助文本与参数错误映射 |
 | `util.py` | 路径、junction、硬链接、JSON、长路径等基础工具 |
 | `errors.py` | `ApmError` 及分类异常 |
 | `known_buckets.py` | 已知源清单加载器：读取 `apps\apm\buckets.json`（程序数据，不经过 `APM_ROOT`），清单可编辑而无需改代码 |
@@ -269,7 +270,7 @@ apps\<app>\
 | `python` | 无，Python 标准库 | 零依赖、行为可控，便于统一做哈希校验与进度 | 仅 HTTP/1.1，无多连接分片，断点续传需自行实现 Range |
 | `aria2` | 外部 `aria2c` | 多连接分片、断点续传，大文件最快 | 需额外安装；存在「用 APM 装 aria2 才能用 aria2 下载」的引导问题 |
 | `curl` | Windows 10 1803+ 自带 `curl.exe` | 系统自带，支持续传、代理、TLS | 需解析退出码与进度输出，不同版本行为有差异 |
-| `wget` | 通常需额外安装 | 支持 `-c` 续传 | Windows 非自带，路径与编码问题较多 |
+| `wget` | 通常需额外安装 | 支持 `-c` 续传 | Windows 非自带，路径与编码问题较多；不自带 Windows 根证书，需通过 `cacert` 包生成的 `wget.ini` 指定 CA 证书 |
 
 说明：
 
@@ -290,6 +291,7 @@ apps\<app>\
 - User-Agent 统一为 `APM/0.1`；`python` 与 `curl` 显式设置，`wget`、`aria2` 通过各自参数设置。
 - 超时：`python` 60 秒；`curl` 连接超时 30 秒；`wget` 60 秒；`aria2` 使用自身默认值。
 - 重定向：`python`、`curl`、`wget` 跟随；`aria2` 使用自身默认行为。
+- `wget` 后端依赖 `cacert` 包提供的 CA 证书：`wget` 的 `post_install` 会把 `ca_certificate=$(appdir cacert $global)\current\cacert.pem` 写入 `wget.ini`。若 `wget.ini` 缺失或路径无效，会出现 TLS 证书校验失败；需重新安装 `cacert` / `wget`，或手动修正 `wget.ini`。
 - 代理：APM 未提供独立代理配置。`python`、`curl`、`wget` 会沿用进程环境变量中的代理设置，`aria2` 未传代理参数。
 
 当前各后端的实际调用方式：
@@ -431,6 +433,7 @@ apps\<app>\
 - 首次运行时自动创建目录与默认配置文件；文件缺失时按内置默认值运行。
 - 默认生成的 `config.json` 在每个选项旁附带同名「键#」说明字段（JSON 不支持注释），介绍取值范围与留空效果；「#」字段运行时忽略、不参与校验，用户可自行改写作为备注。
 - 已存在的旧配置文件不自动回填说明；删除 `config.json` 后运行任意命令即可重新生成带说明的默认配置。
+- JSON 中的 Windows 路径必须写成双反斜杠，例如 `C:\\Program Files\\7-Zip\\7z.exe`；解析失败时报告文件名、行号、列号并提示该转义规则。
 - 配置项使用点号命名，与 Scoop 的配置键风格保持一致。
 
 下载方式作为配置项写入：
@@ -581,7 +584,7 @@ exit $LASTEXITCODE
 | 字段 | 类型 | 解析规则 | main 出现次数 |
 | --- | --- | --- | --- |
 | `version` | string | 必填，必须匹配 `^[\w.\-+_]+$`；允许 `nightly` 字面值 | 1711 |
-| `url` | string / array | 与 `hash` 按顺序一一对应；多个 URL 全部下载并解压；`installer.file` 缺省取第一个 URL 的文件名 | 320（顶层） |
+| `url` | string / array | 与 `hash` 按顺序一一对应；多个 URL 全部下载并解压；`installer.file` 缺省取第一个 URL 的文件名；URL fragment 以 `/` 开头时作为保存文件名（如 `#/cacert.pem`，Scoop 兼容） | 320（顶层） |
 | `hash` | string / array | 64 位十六进制按 SHA-256；也支持 `sha1:` / `sha256:` / `sha512:` / `md5:` 前缀 | 320（顶层） |
 | `architecture` | object | 键为 `64bit` / `32bit` / `arm64`，内容与顶层字段同构 | 1427 |
 | `extract_dir` | string / array | 解压目录；数组按实际发生解压的安装包顺序一一对应 | 248 |
@@ -625,6 +628,7 @@ exit $LASTEXITCODE
 - 内联 PowerShell 执行时提供与 Scoop 同名的变量：`$app`、`$version`、`$bucket`、`$dir`、`$original_dir`、`$persist_dir`、`$global`（恒为 `$false`）、`$architecture`、`$fname`、`$cmd`、`$manifest`，并额外提供 `$bucketsdir`、`$cachedir`、`$scoopdir`。
 - `$dir` 默认指向 `current` 联接路径，`$original_dir` 始终指向真实版本目录。例外：`pre_install` 与 `installer` 执行时 `current` 尚未切换，`$dir` 与 `$original_dir` 都指向新版本目录；`post_install` 与卸载钩子执行时 `$dir` 已指向 `current`。
 - 脚本上下文额外注入 Scoop 同名 helper：`Add-Path` / `Remove-Path`（PowerShell 实现，语义对齐 11.3：只写 `HKCU\Environment\Path`、保留原值类型、去重前置/移除、广播 `WM_SETTINGCHANGE`）；`-Global` 与非 `PATH` 目标变量显式报错。
+- 同时注入 Scoop 路径 helper：`appdir`、`versiondir`、`currentdir`、`persistdir`，供 `post_install` 等脚本使用；APM 不支持全局安装，传入 `$global = $true` 时显式报错。
 
 ### 10.6 支持范围
 
@@ -743,6 +747,13 @@ exit $LASTEXITCODE
 
 命令行帮助由 argparse 自动着色；根帮助底部的别名说明不再写入 `epilog`，而是在 `print_help()` 后由 CLI 单独渲染，颜色取自 argparse 当前主题（`heading`、`action`、`summary_action`、`summary_label`、`summary_long_option`），避免与上半部分割裂，同时避免 ANSI 码参与 epilog 的换行宽度计算。旧版 Python 无 `_colorize` 时保持纯文本，与 argparse 的纯文本帮助一致。子命令帮助不输出别名说明。
 
+#### 文案与本地化
+
+- 全部用户可见文本集中在 `apps\apm\code\messages.py`，业务模块不得内嵌面向用户的字符串；新增文案时先在 `messages.py` 定义常量，再通过 `str.format()` 填充占位符。
+- 当前版本只提供 zh-CN 文案，所有日志、表格、帮助、错误与默认配置说明均为中文；APM、Scoop、Windows、PATH、git、7-Zip、innounp、PowerShell、HTTP、JSON、SHA-256、MSI 以及 manifest 字段名等专有名词保留原文。
+- argparse 的帮助通过 `ApmHelpFormatter` 与 `ApmArgumentParser` 本地化：`用法：`、`位置参数：`、`选项：`、`-h/--help`、`--version` 以及常见参数错误均输出中文；无法识别的 argparse 错误保留原文，避免错误翻译。
+- 根帮助底部的别名说明由 CLI 从 `messages.py` 渲染，不写入 `epilog`。
+
 #### 文案约定
 
 - 完成态使用 `已...`：`已安装`、`已卸载`、`已下载`、`已删除`、`已更新`、`已添加`、`已清理`、`已全部安装完成`。
@@ -763,13 +774,13 @@ exit $LASTEXITCODE
 
 | 命令 | 数据视图 | 汇总行 |
 | --- | --- | --- |
-| `list` | `应用 版本 Bucket 锁定` | `共 N 个应用` |
-| `search` | `Bucket 应用 版本` | `共 N 个结果` |
+| `list` | `应用 版本 软件源 锁定` | `共 N 个应用` |
+| `search` | `软件源 应用 版本` | `共 N 个结果` |
 | `status` | `应用 已安装 最新` | `共 N 个应用可更新，运行 apm update <app> 或 apm update *` |
 | `cache show` | `应用 版本 大小 文件` | `共 N 个缓存文件，合计 X` |
-| `bucket list` | `Bucket 清单 来源` | `共 N 个 bucket` |
-| `bucket known` | `Bucket 仓库` | `共 N 个已知 bucket` |
-| `info` | 应用、版本、Bucket、已安装、锁定、主页、许可证、描述、依赖、命令、建议 | 无 |
+| `bucket list` | `软件源 清单 来源` | `共 N 个软件源` |
+| `bucket known` | `软件源 仓库` | `共 N 个已知软件源` |
+| `info` | 应用、版本、软件源、已安装、锁定、主页、许可证、描述、依赖、命令、建议 | 无 |
 | `download` | 每行一个缓存文件绝对路径 | 无 |
 
 ### 12.6 预定义短别名

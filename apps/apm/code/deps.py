@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from . import installed, manifest
+from . import installed, manifest, messages as msg
 from .errors import DependencyError
 from .manifest import AppRef
 from .output import console
@@ -26,13 +26,17 @@ def resolve(specs: list[str], for_update: bool = False) -> list[AppRef]:
                 pass
             elif version and app in versions and versions[app] != version:
                 raise DependencyError(
-                    f"依赖版本冲突：{app} 已按 {versions[app]} 解析，又要求 {version}"
+                    msg.ERR_DEPENDENCY_CONFLICT.format(
+                        app=app, resolved=versions[app], version=version
+                    )
                 )
             else:
                 return
         if app in visiting:
             chain = " -> ".join(visiting + [app])
-            raise DependencyError(f"检测到循环依赖：{chain}")
+            raise DependencyError(
+                msg.ERR_DEPENDENCY_CYCLE.format(chain=chain)
+            )
 
         if installed.is_installed(app):
             if not is_root:
@@ -41,7 +45,11 @@ def resolve(specs: list[str], for_update: bool = False) -> list[AppRef]:
             elif not for_update:
                 ref = manifest.load_app(app, bucket, version)
                 if installed.installed_version(app) == ref.version:
-                    console.info(f"{app} {ref.version} 已安装，跳过")
+                    console.info(
+                        msg.MSG_APP_INSTALLED_SKIP.format(
+                            app=app, version=ref.version
+                        )
+                    )
                     seen.add(app)
                     return
 

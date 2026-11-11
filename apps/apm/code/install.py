@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from . import cache, config as config_module, deps, download, env, extract, installed
-from . import manifest, paths, ps, shortcuts
+from . import manifest, messages as msg, paths, ps, shortcuts
 from .errors import ApmError, InstallError
 from .manifest import AppRef
 from .output import console
@@ -48,31 +48,34 @@ def install_apps(
 ) -> int:
     for spec in specs:
         if manifest.parse_app_spec(spec)[1].lower() == "apm":
-            raise ApmError("应用名 apm 为 APM 自身保留")
+            raise ApmError(msg.MSG_APM_RESERVED)
     refs = deps.resolve(specs, for_update=for_update or download_only)
     if not refs:
-        console.info("没有需要处理的应用")
+        console.info(msg.MSG_NOTHING_TO_PROCESS)
         return 0
 
-    console.info("计划顺序：" + " -> ".join(ref.app for ref in refs))
+    console.info(msg.MSG_PLAN.format(apps=" -> ".join(ref.app for ref in refs)))
     cfg = config_module.load()
     items = download.build_items(refs)
     if not items:
-        console.info("没有需要下载的文件")
+        console.info(msg.MSG_NOTHING_TO_DOWNLOAD)
         return 0
     results = download.download_all(items, cfg)
     failures = [result for result in results if not result.ok]
     if failures:
         console.failure_list(
-            [f"{result.item.app}：{result.error}" for result in failures]
+            [
+                msg.ERR_ITEM.format(name=result.item.app, error=result.error)
+                for result in failures
+            ]
         )
-        console.error("下载阶段失败，已终止安装，未修改已安装内容")
+        console.error(msg.MSG_DOWNLOAD_STAGE_FAILED)
         return 1
 
     if download_only:
         for result in results:
             console.plain(str(result.item.path))
-        console.success("下载与校验已完成")
+        console.success(msg.MSG_DOWNLOAD_VERIFIED)
         return 0
 
     by_path = {result.item.path: result for result in results}
@@ -80,20 +83,20 @@ def install_apps(
         try:
             _install_one(ref, cfg, by_path)
         except ApmError as exc:
-            console.failure_list([f"{ref.app}：{exc}"])
+            console.failure_list([msg.ERR_ITEM.format(name=ref.app, error=exc)])
             return 1
         except Exception as exc:  # noqa: BLE001
-            console.failure_list([f"{ref.app}：{exc}"])
+            console.failure_list([msg.ERR_ITEM.format(name=ref.app, error=exc)])
             return 1
 
-    console.success("已全部安装完成")
+    console.success(msg.MSG_ALL_INSTALLED)
     return 0
 
 
 def update_apps(targets: list[str]) -> int:
     installed_apps = {item.app: item for item in installed.installed_apps()}
     if not installed_apps:
-        console.info("尚未安装任何应用")
+        console.info(msg.MSG_NO_INSTALLED)
         return 0
 
     if not targets:
@@ -104,30 +107,38 @@ def update_apps(targets: list[str]) -> int:
             _, app, _ = manifest.parse_app_spec(target)
             item = installed_apps.get(app)
             if item is None:
-                raise ApmError(f"应用未安装：{app}")
+                raise ApmError(msg.MSG_APP_NOT_INSTALLED.format(app=app))
             selected.append(item)
 
     specs: list[str] = []
     errors = 0
     for item in selected:
         if item.hold:
-            console.info(f"{item.app} 已锁定，跳过")
+            console.info(msg.MSG_APP_LOCKED_SKIP.format(app=item.app))
             continue
         try:
             ref = manifest.load_app(item.app, item.bucket)
         except ApmError as exc:
-            console.warn(f"无法读取 {item.app} 的清单，跳过：{exc}")
+            console.warn(
+                msg.MSG_MANIFEST_UNREADABLE.format(app=item.app, error=exc)
+            )
             errors += 1
             continue
         if ref.version == item.version:
-            console.info(f"{item.app} 已是最新（{item.version}）")
+            console.info(
+                msg.MSG_APP_LATEST.format(app=item.app, version=item.version)
+            )
             continue
-        console.info(f"更新 {item.app}：{item.version} -> {ref.version}")
+        console.info(
+            msg.MSG_UPDATE_APP.format(
+                app=item.app, old=item.version, new=ref.version
+            )
+        )
         specs.append(f"{ref.bucket}/{item.app}")
     if not specs:
         if errors:
             return 1
-        console.success("所有应用均已是最新版本")
+        console.success(msg.MSG_ALL_LATEST)
         return 0
     result = install_apps(specs, for_update=True)
     return 1 if errors else result
@@ -145,9 +156,9 @@ def _install_one(
     app = ref.app
     version = ref.version
     if app.lower() == "apm":
-        raise InstallError("应用名 apm 为 APM 自身保留")
+        raise InstallError(msg.MSG_APM_RESERVED)
     if installed.is_installed(app) and installed.installed_version(app) == version:
-        console.info(f"{app} {version} 已安装，跳过")
+        console.info(msg.MSG_APP_INSTALLED_SKIP.format(app=app, version=version))
         return
 
     app_root = paths.app_dir(app)
@@ -184,7 +195,7 @@ def _install_one(
 
         _run_installer(ref, version_path, materialized)
 
-        console.info(f"切换 current -> {version}")
+        console.info(msg.MSG_SWITCH_CURRENT.format(version=version))
         _switch_current(current, version_path)
         switched = True
 
@@ -211,7 +222,7 @@ def _install_one(
         _prune_old_versions(old_versions)
         _write_meta(ref, artifacts, old_meta)
         _show_notes(ref, current, version_path, persist_dir)
-        console.success(f"已安装 {app} {version}")
+        console.success(msg.MSG_INSTALLED.format(app=app, version=version))
     except Exception as exc:
         if switched:
             try:
@@ -227,7 +238,9 @@ def _install_one(
                 pass
         if isinstance(exc, ApmError):
             raise
-        raise InstallError(f"安装 {app} 失败：{exc}") from exc
+        raise InstallError(
+            msg.MSG_INSTALL_FAILED.format(app=app, error=exc)
+        ) from exc
 
 
 def _switch_current(current: Path, version_path: Path) -> None:
@@ -260,7 +273,7 @@ def _materialize(
     packages = ref.packages()
     innosetup = bool(ref.field("innosetup"))
     if ref.field("extract_to"):
-        console.warn(f"{ref.app} 使用了 extract_to，首版暂不支持，已忽略")
+        console.warn(msg.MSG_EXTRACT_TO_UNSUPPORTED.format(app=ref.app))
     extract_values, is_list = manifest.extract_dir_values(ref)
     copied: dict[str, Path] = {}
     filenames: list[str] = []
@@ -270,7 +283,9 @@ def _materialize(
         key = cache.cache_path(ref.app, ref.version, package.url)
         result = results_by_path.get(key)
         if result is None or not result.ok:
-            raise InstallError(f"缺少已下载的安装包：{package.url}")
+            raise InstallError(
+                msg.ERR_MISSING_PACKAGE.format(url=package.url)
+            )
         name = manifest.remote_filename(package.url)
         filenames.append(name)
         archive = result.item.path
@@ -283,7 +298,7 @@ def _materialize(
                 )
             else:
                 extract_dir = extract_values[0] if extract_values else None
-            console.info(f"解压 {name}")
+            console.info(msg.MSG_EXTRACTING.format(file=name))
             extract.extract_package(archive, version_path, extract_dir, innosetup, cfg)
             extracted_index += 1
         else:
@@ -305,12 +320,14 @@ def _run_installer(ref: AppRef, version_path: Path, materialized: Materialized) 
         file_name = installer.get("file")
         if not file_name:
             if not materialized.filenames:
-                raise InstallError("installer 缺少 file，且没有可用的下载文件名")
+                raise InstallError(msg.ERR_INSTALLER_NO_FILE)
             file_name = materialized.filenames[0]
         file_name = str(file_name)
         executable = manifest.ensure_inside(version_path, file_name, "installer.file")
         if not executable.is_file():
-            raise InstallError(f"installer.file 不存在：{file_name}")
+            raise InstallError(
+                msg.ERR_INSTALLER_FILE_MISSING.format(file=file_name)
+            )
 
         args = str(installer.get("args") or "")
         args = manifest.substitute(
@@ -323,7 +340,7 @@ def _run_installer(ref: AppRef, version_path: Path, materialized: Materialized) 
                 "$global": "false",
             },
         )
-        console.info(f"运行安装器 {file_name}")
+        console.info(msg.MSG_RUNNING_INSTALLER.format(file=file_name))
         ps.run_installer(
             executable,
             args,
@@ -384,13 +401,13 @@ def _create_bin_entries(
         args = manifest.substitute(entry.args, mapping)
         wrapper_name = _wrapper_name(entry.name)
         if wrapper_name.lower() == "apm":
-            raise InstallError("bin 命令名不能为 apm")
+            raise InstallError(msg.ERR_BIN_NAME_APM)
         variants = [
             paths.SHIM_DIR / f"{wrapper_name}{extension}"
             for extension in (".cmd", ".exe", ".shim")
         ]
         if any(variant.exists() for variant in variants):
-            console.warn(f"覆盖已存在的命令入口：{wrapper_name}")
+            console.warn(msg.MSG_OVERWRITE_SHIM.format(name=wrapper_name))
         for variant in variants:
             remove_path(variant)
         if resolved.suffix.lower() in (".exe", ".com"):
@@ -398,13 +415,13 @@ def _create_bin_entries(
         else:
             _write_wrapper(variants[0], resolved, args)
         artifacts.bin.append(wrapper_name)
-        console.info(f"创建命令入口 {wrapper_name}")
+        console.info(msg.MSG_CREATING_SHIM.format(name=wrapper_name))
 
 
 def _resolve_bin_target(current: Path, original_dir: Path, target: str) -> Path:
     text = target.strip().strip('"')
     if not text:
-        raise InstallError("bin 目标为空")
+        raise InstallError(msg.ERR_BIN_TARGET_EMPTY)
     candidate = Path(text)
     if candidate.is_absolute():
         if candidate.is_file():
@@ -417,7 +434,7 @@ def _resolve_bin_target(current: Path, original_dir: Path, target: str) -> Path:
     found = shutil.which(text)
     if found:
         return Path(found)
-    raise InstallError(f"bin 目标不存在：{target}")
+    raise InstallError(msg.ERR_BIN_TARGET_MISSING.format(target=target))
 
 
 def _wrapper_name(name: str) -> str:
@@ -447,12 +464,16 @@ def _write_wrapper(path: Path, target: Path, fixed_args: str) -> None:
 def _write_native_shim(name: str, target: Path, fixed_args: str) -> None:
     """复制 vendored shim.exe 并写 .shim 旁车文件（对齐 Scoop 的 shim 函数）。"""
     if not paths.VENDORED_SHIM.is_file():
-        raise InstallError(f"内置 shim 不存在：{paths.VENDORED_SHIM}")
+        raise InstallError(
+            msg.ERR_SHIM_MISSING.format(path=paths.VENDORED_SHIM)
+        )
     expected = _vendored_shim_checksum()
     actual = hashlib.sha256(paths.VENDORED_SHIM.read_bytes()).hexdigest()
     if actual != expected:
         raise InstallError(
-            f"内置 shim 校验失败：{paths.VENDORED_SHIM}\n期望：{expected}\n实际：{actual}"
+            msg.ERR_SHIM_CHECKSUM.format(
+                path=paths.VENDORED_SHIM, expected=expected, actual=actual
+            )
         )
     shim_exe = paths.SHIM_DIR / f"{name}.exe"
     shim_conf = paths.SHIM_DIR / f"{name}.shim"
@@ -466,13 +487,17 @@ def _write_native_shim(name: str, target: Path, fixed_args: str) -> None:
 def _vendored_shim_checksum() -> str:
     if not paths.VENDORED_SHIM_CHECKSUM.is_file():
         raise InstallError(
-            f"内置 shim 校验文件不存在：{paths.VENDORED_SHIM_CHECKSUM}"
+            msg.ERR_SHIM_CHECKSUM_MISSING.format(
+                path=paths.VENDORED_SHIM_CHECKSUM
+            )
         )
     text = paths.VENDORED_SHIM_CHECKSUM.read_text(encoding="utf-8-sig").strip()
     expected = text.split()[0].lower() if text else ""
     if len(expected) != 64:
         raise InstallError(
-            f"内置 shim 校验文件格式无效：{paths.VENDORED_SHIM_CHECKSUM}"
+            msg.ERR_SHIM_CHECKSUM_INVALID.format(
+                path=paths.VENDORED_SHIM_CHECKSUM
+            )
         )
     return expected
 
@@ -527,7 +552,7 @@ def _apply_env(
     if path_entries:
         env.add_path(path_entries)
         artifacts.env_add_path.extend(path_entries)
-        console.info(f"加入用户 PATH：{'; '.join(path_entries)}")
+        console.info(msg.MSG_ADD_PATH.format(entries="; ".join(path_entries)))
 
     values = manifest.env_set_values(ref)
     if values:
@@ -546,7 +571,7 @@ def _apply_env(
         }
         env.set_variables(values)
         artifacts.env_set.extend(values.keys())
-        console.info(f"写入环境变量：{', '.join(values.keys())}")
+        console.info(msg.MSG_SET_ENV.format(names=", ".join(values.keys())))
 
 
 def _apply_persist(
@@ -578,7 +603,7 @@ def _apply_persist(
         else:
             create_hardlink(source, target)
         artifacts.persist.append([source_rel, target_rel])
-        console.info(f"持久化 {source_rel}")
+        console.info(msg.MSG_PERSISTING.format(source=source_rel))
 
 
 def _prune_old_versions(old_versions: list[Path]) -> None:
@@ -587,7 +612,9 @@ def _prune_old_versions(old_versions: list[Path]) -> None:
             continue
         remove_path(old)
         if old.exists():
-            console.warn(f"旧版本目录删除失败（可能被占用）：{old}")
+            console.warn(
+                msg.MSG_OLD_VERSION_DELETE_FAILED.format(path=old)
+            )
 
 
 def _write_meta(ref: AppRef, artifacts: Artifacts, old_meta: dict[str, Any]) -> None:
@@ -624,6 +651,6 @@ def _show_notes(
             "$persist_dir": str(persist_dir),
         },
     )
-    console.heading("Notes")
+    console.heading(msg.NOTES_TITLE)
     console.plain(notes)
     console.plain()

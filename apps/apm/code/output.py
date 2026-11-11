@@ -11,9 +11,10 @@ import os
 import sys
 import threading
 
+from . import messages as msg
 from .util import display_width
 
-PREFIX = "[apm]"
+PREFIX = msg.PREFIX
 BODY_INDENT = " " * 6
 ITEM_INDENT = "  - "
 ITEM_CONT_INDENT = "    "
@@ -86,7 +87,7 @@ class Console:
     def failure_list(self, failures: list[str]) -> None:
         if not failures:
             return
-        self.error("以下项目失败：")
+        self.error(msg.MSG_FAILURE_HEADER)
         with self._lock:
             for item in failures:
                 lines = str(item).rstrip("\n").splitlines() or [""]

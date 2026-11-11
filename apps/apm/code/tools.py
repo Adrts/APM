@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from . import paths
+from . import messages as msg, paths
 from .errors import ToolError
 from .util import run
 
@@ -37,10 +37,7 @@ def find_7z(config: dict[str, Any], section: str = "extract") -> Path | None:
 def require_7z(config: dict[str, Any], section: str = "extract") -> Path:
     tool = find_7z(config, section)
     if not tool:
-        raise ToolError(
-            "未检测到 7z.exe，请安装 7-Zip 并在配置中设置 "
-            f"{section}.seven_zip，或运行 apm install 7zip"
-        )
+        raise ToolError(msg.ERR_7Z_MISSING.format(section=section))
     return tool
 
 
@@ -52,9 +49,7 @@ def find_innounp(config: dict[str, Any]) -> Path | None:
 def require_innounp(config: dict[str, Any]) -> Path:
     tool = find_innounp(config)
     if not tool:
-        raise ToolError(
-            "未检测到 innounp.exe，请安装 innounp 并在配置中设置 extract.innounp"
-        )
+        raise ToolError(msg.ERR_INNOUNP_MISSING)
     return tool
 
 

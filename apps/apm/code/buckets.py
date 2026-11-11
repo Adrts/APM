@@ -7,6 +7,7 @@ import re
 import shutil
 from pathlib import Path
 
+from . import messages as msg
 from . import paths
 from .errors import BucketError, ManifestError
 from .known_buckets import KNOWN_BUCKETS
@@ -71,24 +72,30 @@ def manifest_path(app: str, bucket: str) -> Path:
 def find_app(app: str, bucket: str | None = None) -> tuple[str, Path]:
     app = sanitary_name(app)
     if not app:
-        raise ManifestError("应用名为空")
+        raise ManifestError(msg.ERR_APP_NAME_EMPTY)
     if bucket:
         path = manifest_path(app, bucket)
         if not path.is_file():
-            raise ManifestError(f"bucket '{bucket}' 中找不到应用 '{app}'")
+            raise ManifestError(
+                msg.ERR_APP_NOT_FOUND_IN_BUCKET.format(bucket=bucket, app=app)
+            )
         return bucket, path
     if not paths.BUCKETS_DIR.exists():
-        raise BucketError("尚未添加任何 bucket，运行 apm bucket add main")
+        raise BucketError(msg.MSG_NO_BUCKETS)
     matches: list[tuple[str, Path]] = []
     for name in bucket_names():
         path = manifest_path(app, name)
         if path.is_file():
             matches.append((name, path))
     if not matches:
-        raise ManifestError(f"找不到应用 '{app}'，可运行 apm search {app} 查看")
+        raise ManifestError(msg.ERR_APP_NOT_FOUND.format(app=app))
     if len(matches) > 1:
         names = ", ".join(name for name, _ in matches)
-        console.warn(f"应用 '{app}' 存在于多个 bucket（{names}），使用 '{matches[0][0]}'")
+        console.warn(
+            msg.MSG_BUCKET_AMBIGUOUS.format(
+                app=app, names=names, chosen=matches[0][0]
+            )
+        )
     return matches[0]
 
 
@@ -127,18 +134,18 @@ def manifest_count(name: str) -> int:
 
 def add_bucket(name: str, repo: str | None = None) -> None:
     if not BUCKET_NAME_RE.match(name):
-        raise BucketError(f"bucket 名称无效：{name}")
+        raise BucketError(msg.ERR_BUCKET_NAME_INVALID.format(name=name))
     if not shutil.which("git"):
-        raise BucketError("未检测到 git，请先安装 git 并加入 PATH")
+        raise BucketError(msg.ERR_GIT_MISSING)
     root = bucket_root(name)
     if root.exists():
-        raise BucketError(f"bucket '{name}' 已存在")
+        raise BucketError(msg.ERR_BUCKET_EXISTS.format(name=name))
     if not repo:
         repo = KNOWN_BUCKETS.get(name)
         if not repo:
-            raise BucketError(f"未知 bucket：{name}，请显式提供仓库地址")
+            raise BucketError(msg.ERR_BUCKET_UNKNOWN.format(name=name))
     ensure_dir(paths.BUCKETS_DIR)
-    console.info(f"添加 bucket '{name}'：{repo}")
+    console.info(msg.MSG_BUCKET_ADDING.format(name=name, repo=repo))
     proc = run(
         [
             "git",
@@ -154,49 +161,57 @@ def add_bucket(name: str, repo: str | None = None) -> None:
     if proc.returncode != 0:
         remove_path(root)
         detail = (proc.stderr or proc.stdout).strip()
-        raise BucketError(f"添加 bucket 失败：{name}\n{detail}")
+        raise BucketError(
+            msg.ERR_BUCKET_ADD_FAILED.format(name=name, detail=detail)
+        )
     _remember(name)
-    console.success(f"bucket '{name}' 已添加（{manifest_count(name)} 个清单）")
+    console.success(
+        msg.MSG_BUCKET_ADDED.format(name=name, count=manifest_count(name))
+    )
 
 
 def remove_bucket(name: str) -> None:
     root = bucket_root(name)
     if not root.exists():
-        raise BucketError(f"bucket '{name}' 不存在")
+        raise BucketError(msg.ERR_BUCKET_NOT_FOUND.format(name=name))
     remove_path(root)
     if root.exists():
-        raise BucketError(f"bucket '{name}' 删除不完整，请关闭占用后重试")
+        raise BucketError(msg.ERR_BUCKET_DELETE_INCOMPLETE.format(name=name))
     _forget(name)
-    console.success(f"bucket '{name}' 已删除")
+    console.success(msg.MSG_BUCKET_REMOVED.format(name=name))
 
 
 def update_bucket(name: str) -> None:
     root = bucket_root(name)
     if not root.exists():
-        raise BucketError(f"bucket '{name}' 不存在")
+        raise BucketError(msg.ERR_BUCKET_NOT_FOUND.format(name=name))
     if not (root / ".git").exists():
-        raise BucketError(f"bucket '{name}' 不是 git 仓库，无法更新")
+        raise BucketError(msg.ERR_BUCKET_NOT_GIT.format(name=name))
     if not shutil.which("git"):
-        raise BucketError("未检测到 git，请先安装 git 并加入 PATH")
+        raise BucketError(msg.ERR_GIT_MISSING)
     fetch = run(["git", "-C", str(root), "fetch", "--depth", "1", "--no-tags", "origin"])
     if fetch.returncode != 0:
-        raise BucketError((fetch.stderr or fetch.stdout).strip() or "git fetch 失败")
+        raise BucketError(
+            (fetch.stderr or fetch.stdout).strip() or msg.ERR_GIT_FETCH
+        )
     reset = run(["git", "-C", str(root), "reset", "--hard", "FETCH_HEAD"])
     if reset.returncode != 0:
-        raise BucketError((reset.stderr or reset.stdout).strip() or "git reset 失败")
+        raise BucketError(
+            (reset.stderr or reset.stdout).strip() or msg.ERR_GIT_RESET
+        )
 
 
 def update_buckets(name: str | None = None) -> list[str]:
     names = [name] if name else bucket_names()
     if not names:
-        console.info("尚未添加任何 bucket，运行 apm bucket add main")
+        console.info(msg.MSG_NO_BUCKETS)
         return []
     failures: list[str] = []
     for bucket in names:
         try:
             update_bucket(bucket)
-            console.success(f"bucket '{bucket}' 已更新")
+            console.success(msg.MSG_BUCKET_UPDATED.format(name=bucket))
         except BucketError as exc:
-            failures.append(f"{bucket}：{exc}")
-            console.warn(f"bucket '{bucket}' 更新失败，保留旧索引")
+            failures.append(msg.ERR_ITEM.format(name=bucket, error=exc))
+            console.warn(msg.MSG_BUCKET_UPDATE_FAILED.format(name=bucket))
     return failures

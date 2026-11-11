@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 from . import buckets, installed
-from . import manifest, paths
+from . import manifest, messages as msg, paths
 from .errors import ApmError
 from .manifest import AppRef
 from .output import console
@@ -28,23 +29,25 @@ def list_installed(query: str | None = None) -> int:
         apps = [item for item in apps if lowered in item.app.lower()]
     if not apps:
         if query:
-            console.info("没有匹配的已安装应用")
+            console.info(msg.MSG_NO_MATCH_INSTALLED)
         else:
-            console.info("尚未安装任何应用")
+            console.info(msg.MSG_NO_INSTALLED)
         return 0
     name_width = max(8, max(display_width(item.app) for item in apps))
     version_width = max(8, max(display_width(item.version) for item in apps))
     console.heading(
-        f"{pad_text('应用', name_width)}  {pad_text('版本', version_width)}  "
-        f"{pad_text('Bucket', 12)} 锁定"
+        f"{pad_text(msg.TABLE_APP, name_width)}  "
+        f"{pad_text(msg.TABLE_VERSION, version_width)}  "
+        f"{pad_text(msg.TABLE_SOURCE, 12)} {msg.TABLE_LOCK}"
     )
     for item in apps:
         console.plain(
             f"{pad_text(item.app, name_width)}  {pad_text(item.version, version_width)}  "
-            f"{pad_text(item.bucket or '-', 12)} {'是' if item.hold else '否'}"
+            f"{pad_text(item.bucket or msg.DASH, 12)} "
+            f"{msg.YES if item.hold else msg.NO}"
         )
     console.plain()
-    console.summary(f"共 {len(apps)} 个应用")
+    console.summary(msg.SUMMARY_APPS.format(count=len(apps)))
     return 0
 
 
@@ -68,20 +71,21 @@ def search(query: str) -> int:
             continue
         rows.append((bucket, app, str(data.get("version") or "")))
     if not rows:
-        console.info(f"没有匹配 '{query}' 的应用")
+        console.info(msg.MSG_NO_MATCH_SEARCH.format(query=query))
         return 0
     rows.sort(key=lambda row: (row[1].lower(), row[0].lower()))
     bucket_width = max(8, max(display_width(row[0]) for row in rows))
     name_width = max(12, max(display_width(row[1]) for row in rows))
     console.heading(
-        f"{pad_text('Bucket', bucket_width)}  {pad_text('应用', name_width)}  版本"
+        f"{pad_text(msg.TABLE_SOURCE, bucket_width)}  "
+        f"{pad_text(msg.TABLE_APP, name_width)}  {msg.TABLE_VERSION}"
     )
     for bucket, app, version in rows:
         console.plain(
             f"{pad_text(bucket, bucket_width)}  {pad_text(app, name_width)}  {version}"
         )
     console.plain()
-    console.summary(f"共 {len(rows)} 个结果")
+    console.summary(msg.SUMMARY_RESULTS.format(count=len(rows)))
     return 0
 
 
@@ -115,7 +119,7 @@ def info(apps: list[str]) -> int:
         _, name, _ = manifest.parse_app_spec(app)
         ref = _find_for_info(name)
         if ref is None:
-            console.error(f"找不到应用：{name}")
+            console.error(msg.MSG_INFO_NOT_FOUND.format(app=name))
             failed = True
             continue
         if not first:
@@ -124,54 +128,70 @@ def info(apps: list[str]) -> int:
         data = ref.data
         meta = installed.read_meta(name) or {}
         installed_now = installed.is_installed(name)
-        installed_text = "否"
+        installed_text = msg.NO
         if installed_now:
-            installed_text = f"是（{installed.installed_version(name)}）"
-        console.plain(_field("应用", name))
-        console.plain(_field("版本", ref.version))
-        console.plain(_field("Bucket", ref.bucket or "-"))
-        console.plain(_field("已安装", installed_text))
-        console.plain(_field("锁定", "是" if installed_now and meta.get("hold") else "否"))
-        console.plain(_field("主页", data.get("homepage") or "-"))
-        console.plain(_field("许可证", manifest.license_text(data.get("license", "")) or "-"))
+            installed_text = msg.MSG_INSTALLED_YES.format(
+                version=installed.installed_version(name)
+            )
+        console.plain(_field(msg.FIELD_APP, name))
+        console.plain(_field(msg.FIELD_VERSION, ref.version))
+        console.plain(_field(msg.FIELD_BUCKET, ref.bucket or msg.DASH))
+        console.plain(_field(msg.FIELD_INSTALLED, installed_text))
+        console.plain(
+            _field(
+                msg.FIELD_HOLD,
+                msg.YES if installed_now and meta.get("hold") else msg.NO,
+            )
+        )
+        console.plain(_field(msg.FIELD_HOMEPAGE, data.get("homepage") or msg.DASH))
+        console.plain(
+            _field(
+                msg.FIELD_LICENSE,
+                manifest.license_text(data.get("license", "")) or msg.DASH,
+            )
+        )
         description = data.get("description")
         if description:
-            console.plain(_field("描述", description))
+            console.plain(_field(msg.FIELD_DESCRIPTION, description))
         depends = data.get("depends")
         if depends:
             console.plain(
                 _field(
-                    "依赖",
+                    msg.FIELD_DEPENDS,
                     ", ".join(str(item) for item in manifest.normalize_list(depends)),
                 )
             )
         try:
             bins = manifest.parse_bin(ref.field("bin"))
             if bins:
-                console.plain(_field("命令", ", ".join(entry.name for entry in bins)))
+                console.plain(
+                    _field(msg.FIELD_BIN, ", ".join(entry.name for entry in bins))
+                )
         except ApmError:
             pass
         suggest = data.get("suggest")
         if isinstance(suggest, dict) and suggest:
-            console.plain(_field("建议", ", ".join(str(key) for key in suggest)))
+            console.plain(
+                _field(msg.FIELD_SUGGEST, ", ".join(str(key) for key in suggest))
+            )
     return 1 if failed else 0
 
 
 def status() -> int:
     apps = installed.installed_apps()
     if not apps:
-        console.info("尚未安装任何应用")
+        console.info(msg.MSG_NO_INSTALLED)
         return 0
     outdated: list[tuple[str, str, str]] = []
     errors = 0
     for item in apps:
         if item.hold:
-            console.info(f"{item.app} 已锁定，跳过检查")
+            console.info(msg.MSG_APP_LOCKED_CHECK.format(app=item.app))
             continue
         try:
             ref = manifest.load_app(item.app, item.bucket)
         except ApmError as exc:
-            console.warn(f"无法检查 {item.app}：{exc}")
+            console.warn(msg.MSG_CHECKS_FAILED.format(app=item.app, error=exc))
             errors += 1
             continue
         if ref.version != item.version:
@@ -179,18 +199,19 @@ def status() -> int:
     if not outdated:
         if errors:
             return 1
-        console.success("所有应用均已是最新版本")
+        console.success(msg.MSG_ALL_LATEST)
         return 0
     name_width = max(8, max(display_width(row[0]) for row in outdated))
-    console.heading(f"{pad_text('应用', name_width)}  {pad_text('已安装', 14)}  最新")
+    console.heading(
+        f"{pad_text(msg.TABLE_APP, name_width)}  "
+        f"{pad_text(msg.TABLE_INSTALLED, 14)}  {msg.TABLE_LATEST}"
+    )
     for app, current, latest in outdated:
         console.plain(
             f"{pad_text(app, name_width)}  {pad_text(current, 14)}  {latest}"
         )
     console.plain()
-    console.summary(
-        f"共 {len(outdated)} 个应用可更新，运行 apm update <app> 或 apm update *"
-    )
+    console.summary(msg.SUMMARY_OUTDATED.format(count=len(outdated)))
     return 1 if errors else 0
 
 
@@ -199,7 +220,7 @@ def cleanup(app: str | None = None) -> int:
     if app:
         name = manifest.parse_app_spec(app)[1]
         if name.lower() == "apm":
-            console.error("不能清理 APM 自身")
+            console.error(msg.MSG_CLEAN_APM)
             return 1
         targets = [name]
     else:
@@ -227,7 +248,7 @@ def cleanup(app: str | None = None) -> int:
                 if file_path.exists():
                     remove_path(file_path)
                     if file_path.exists():
-                        console.warn(f"删除失败（可能被占用）：{file_path}")
+                        console.warn(msg.MSG_DELETE_FAILED.format(path=file_path))
                     else:
                         removed_files += 1
         for directory in list(app_root.iterdir()):
@@ -236,7 +257,7 @@ def cleanup(app: str | None = None) -> int:
             if directory.name in (".apm-current-new", ".apm-current-old"):
                 remove_path(directory)
                 if directory.exists():
-                    console.warn(f"删除失败（可能被占用）：{directory}")
+                    console.warn(msg.MSG_DELETE_FAILED.format(path=directory))
                 else:
                     removed_dirs += 1
                 continue
@@ -246,7 +267,7 @@ def cleanup(app: str | None = None) -> int:
                 continue
             remove_path(directory)
             if directory.exists():
-                console.warn(f"删除失败（可能被占用）：{directory}")
+                console.warn(msg.MSG_DELETE_FAILED.format(path=directory))
             else:
                 removed_dirs += 1
         try:
@@ -266,11 +287,11 @@ def cleanup(app: str | None = None) -> int:
                 continue
             remove_path(path)
             if path.exists():
-                console.warn(f"删除失败（可能被占用）：{path}")
+                console.warn(msg.MSG_DELETE_FAILED.format(path=path))
             else:
                 removed_files += 1
 
     console.success(
-        f"已清理：删除 {removed_dirs} 个目录、{removed_files} 个临时文件"
+        msg.MSG_CLEANED.format(dirs=removed_dirs, files=removed_files)
     )
     return 0

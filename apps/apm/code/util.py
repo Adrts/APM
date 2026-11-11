@@ -17,6 +17,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Iterable
 
+from . import messages as msg
 from .errors import ApmError
 
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
@@ -231,10 +232,14 @@ def create_junction(link: os.PathLike[str] | str, target: os.PathLike[str] | str
     try:
         os.makedirs(lp(link_path.parent), exist_ok=True)
     except OSError as exc:
-        raise ApmError(f"无法创建 junction 父目录：{link_path.parent}（{exc}）") from exc
+        raise ApmError(
+            msg.ERR_JUNCTION_PARENT.format(
+                path=link_path.parent, error=exc
+            )
+        ) from exc
     remove_path(link_path)
     if not os.path.exists(lp(target_path)):
-        raise ApmError(f"junction 目标不存在：{target_path}")
+        raise ApmError(msg.ERR_JUNCTION_TARGET.format(path=target_path))
     if os.name == "nt":
         try:
             os.makedirs(lp(link_path), exist_ok=True)
@@ -251,7 +256,11 @@ def create_junction(link: os.PathLike[str] | str, target: os.PathLike[str] | str
     )
     if proc.returncode != 0:
         raise ApmError(
-            f"创建目录联接失败：{link_path} -> {target_path}\n{proc.stdout}{proc.stderr}".strip()
+            msg.ERR_JUNCTION_CREATE.format(
+                link=link_path,
+                target=target_path,
+                detail=f"{proc.stdout}{proc.stderr}".strip(),
+            )
         )
 
 
@@ -260,12 +269,20 @@ def create_hardlink(link: os.PathLike[str] | str, target: os.PathLike[str] | str
     try:
         os.makedirs(lp(link_path.parent), exist_ok=True)
     except OSError as exc:
-        raise ApmError(f"无法创建硬链接父目录：{link_path.parent}（{exc}）") from exc
+        raise ApmError(
+            msg.ERR_HARDLINK_PARENT.format(
+                path=link_path.parent, error=exc
+            )
+        ) from exc
     remove_path(link_path)
     try:
         os.link(lp(target), lp(link_path))
     except OSError as exc:
-        raise ApmError(f"创建硬链接失败：{link_path} -> {target}（{exc}）") from exc
+        raise ApmError(
+            msg.ERR_HARDLINK.format(
+                link=link_path, target=target, error=exc
+            )
+        ) from exc
 
 
 def path_is_within(base: os.PathLike[str] | str, target: os.PathLike[str] | str) -> bool:
@@ -285,12 +302,12 @@ def safe_child(base: os.PathLike[str] | str, *parts: str) -> Path:
             continue
         candidate = Path(part)
         if candidate.is_absolute() or candidate.drive or candidate.root:
-            raise ApmError(f"拒绝绝对路径：{part}")
+            raise ApmError(msg.ERR_PATH_ABSOLUTE.format(part=part))
         if ".." in candidate.parts:
-            raise ApmError(f"拒绝越界路径：{part}")
+            raise ApmError(msg.ERR_PATH_TRAVERSAL.format(part=part))
     result = base_path.joinpath(*[p for p in parts if p])
     if not path_is_within(base_path, result):
-        raise ApmError(f"路径越界：{result}")
+        raise ApmError(msg.ERR_PATH_OUTSIDE.format(path=result))
     return result
 
 
@@ -358,7 +375,7 @@ def write_json(path: os.PathLike[str] | str, data: Any) -> None:
             fh.write("\n")
         os.replace(lp(tmp), lp(p))
     except OSError as exc:
-        raise ApmError(f"写入文件失败：{p}\n{exc}") from exc
+        raise ApmError(msg.ERR_WRITE_FILE.format(path=p, error=exc)) from exc
 
 
 def now_iso() -> str:

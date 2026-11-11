@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import messages as msg
 from . import paths
 from .manifest import url_extension
 from .output import console
@@ -64,14 +65,15 @@ def entries() -> list[CacheEntry]:
 def show() -> None:
     items = entries()
     if not items:
-        console.info("没有缓存文件")
+        console.info(msg.MSG_NO_CACHE)
         return
     width = terminal_columns()
     app_width = max(12, max(display_width(item.app) for item in items))
     version_width = max(12, max(display_width(item.version) for item in items))
     console.heading(
-        f"{pad_text('应用', app_width)}  {pad_text('版本', version_width)}  "
-        f"{pad_text('大小', 10, 'right')}  文件"
+        f"{pad_text(msg.TABLE_APP, app_width)}  "
+        f"{pad_text(msg.TABLE_VERSION, version_width)}  "
+        f"{pad_text(msg.TABLE_SIZE, 10, 'right')}  {msg.TABLE_FILE}"
     )
     total = 0
     for item in items:
@@ -82,7 +84,9 @@ def show() -> None:
         )
         console.plain(prefix + fit_text(item.path.name, width - display_width(prefix)))
     console.plain()
-    console.summary(f"共 {len(items)} 个缓存文件，合计 {human_size(total)}")
+    console.summary(
+        msg.SUMMARY_CACHE.format(count=len(items), size=human_size(total))
+    )
 
 
 def _remove_with_sidecars(path: Path) -> int:
@@ -95,7 +99,11 @@ def _remove_with_sidecars(path: Path) -> int:
                 if suffix == "":
                     removed += 1
             except OSError as exc:
-                console.warn(f"删除失败（可能被占用）：{target}（{exc}）")
+                console.warn(
+                    msg.MSG_CACHE_DELETE_FAILED.format(
+                        path=target, error=exc
+                    )
+                )
     return removed
 
 
@@ -118,6 +126,8 @@ def remove(target: str | None) -> None:
                     except OSError:
                         pass
     if removed == 0:
-        console.info("没有匹配的缓存文件")
+        console.info(msg.MSG_NO_MATCH_CACHE)
         return
-    console.success(f"已删除 {removed} 个缓存文件，释放 {human_size(total)}")
+    console.success(
+        msg.MSG_CACHE_REMOVED.format(count=removed, size=human_size(total))
+    )
