@@ -321,6 +321,13 @@ def display_width(text: str) -> int:
     )
 
 
+def pad_text(text: object, width: int, align: str = "left") -> str:
+    """Pad text to a console display width so CJK and ASCII columns line up."""
+    value = str(text)
+    gap = " " * max(0, width - display_width(value))
+    return gap + value if align == "right" else value + gap
+
+
 def fit_text(text: str, width: int) -> str:
     """Truncate text to the console display width so the line never wraps."""
     if width <= 0:

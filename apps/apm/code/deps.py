@@ -41,7 +41,7 @@ def resolve(specs: list[str], for_update: bool = False) -> list[AppRef]:
             elif not for_update:
                 ref = manifest.load_app(app, bucket, version)
                 if installed.installed_version(app) == ref.version:
-                    console.info(f"{app} 已安装（{ref.version}），跳过")
+                    console.info(f"{app} {ref.version} 已安装，跳过")
                     seen.add(app)
                     return
 

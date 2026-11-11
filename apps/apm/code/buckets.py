@@ -78,7 +78,7 @@ def find_app(app: str, bucket: str | None = None) -> tuple[str, Path]:
             raise ManifestError(f"bucket '{bucket}' 中找不到应用 '{app}'")
         return bucket, path
     if not paths.BUCKETS_DIR.exists():
-        raise BucketError("尚未添加任何 bucket，请先运行 apm bucket add main")
+        raise BucketError("尚未添加任何 bucket，运行 apm bucket add main")
     matches: list[tuple[str, Path]] = []
     for name in bucket_names():
         path = manifest_path(app, name)
@@ -156,7 +156,7 @@ def add_bucket(name: str, repo: str | None = None) -> None:
         detail = (proc.stderr or proc.stdout).strip()
         raise BucketError(f"添加 bucket 失败：{name}\n{detail}")
     _remember(name)
-    console.success(f"bucket '{name}' 添加完成（{manifest_count(name)} 个清单）")
+    console.success(f"bucket '{name}' 已添加（{manifest_count(name)} 个清单）")
 
 
 def remove_bucket(name: str) -> None:
@@ -189,7 +189,7 @@ def update_bucket(name: str) -> None:
 def update_buckets(name: str | None = None) -> list[str]:
     names = [name] if name else bucket_names()
     if not names:
-        console.warn("尚未添加任何 bucket")
+        console.info("尚未添加任何 bucket，运行 apm bucket add main")
         return []
     failures: list[str] = []
     for bucket in names:
@@ -197,6 +197,6 @@ def update_buckets(name: str | None = None) -> list[str]:
             update_bucket(bucket)
             console.success(f"bucket '{bucket}' 已更新")
         except BucketError as exc:
-            failures.append(f"{bucket}: {exc}")
+            failures.append(f"{bucket}：{exc}")
             console.warn(f"bucket '{bucket}' 更新失败，保留旧索引")
     return failures

@@ -9,7 +9,7 @@ from . import __version__, buckets, cache, install, installed, manifest, query, 
 from .errors import ApmError
 from .known_buckets import KNOWN_BUCKETS
 from .output import console
-from .util import display_width, fit_text, terminal_columns
+from .util import display_width, fit_text, pad_text, terminal_columns
 
 # 预定义短别名：仅命令级，第一个参数精确匹配时替换为正式命令名。
 SHORT_ALIASES = {
@@ -203,7 +203,7 @@ def dispatch(
 
 
 def _set_hold(apps: list[str], hold: bool) -> int:
-    verb = "锁定" if hold else "解除锁定"
+    verb = "已锁定" if hold else "已解除锁定"
     for raw in apps:
         _, app, _ = manifest.parse_app_spec(raw)
         changed = installed.set_hold(app, hold)
@@ -221,7 +221,7 @@ def _update(targets: list[str], all_apps: bool = False) -> int:
         if failures:
             console.failure_list(failures)
             return 1
-        console.success("bucket 索引更新完成")
+        console.success("已更新全部 bucket 索引")
         return 0
     if all_apps:
         bucket_failures = buckets.update_buckets()
@@ -241,9 +241,12 @@ def _bucket(args: argparse.Namespace) -> int:
         buckets.remove_bucket(args.name)
         return 0
     if action == "known":
-        name_width = max(len(name) for name in KNOWN_BUCKETS)
+        name_width = max(8, max(display_width(name) for name in KNOWN_BUCKETS))
+        console.heading(f"{pad_text('Bucket', name_width)}  仓库")
         for name, repo in sorted(KNOWN_BUCKETS.items()):
-            console.plain(f"{name:<{name_width}}  {repo}")
+            console.plain(f"{pad_text(name, name_width)}  {repo}")
+        console.plain()
+        console.summary(f"共 {len(KNOWN_BUCKETS)} 个已知 bucket")
         return 0
     if action in (None, "list"):
         names = buckets.bucket_names()
@@ -251,13 +254,20 @@ def _bucket(args: argparse.Namespace) -> int:
             console.info("尚未添加任何 bucket，运行 apm bucket add main")
             return 0
         width = terminal_columns()
-        name_width = max(8, max(len(name) for name in names))
-        console.plain(f"{'Bucket':<{name_width}}  {'清单':>6} 来源")
+        name_width = max(8, max(display_width(name) for name in names))
+        console.heading(
+            f"{pad_text('Bucket', name_width)}  {pad_text('清单', 6, 'right')}  来源"
+        )
         for name in names:
-            prefix = f"{name:<{name_width}}  {buckets.manifest_count(name):>6} "
+            prefix = (
+                f"{pad_text(name, name_width)}  "
+                f"{buckets.manifest_count(name):>6}  "
+            )
             console.plain(
                 prefix + fit_text(buckets.bucket_source(name), width - display_width(prefix))
             )
+        console.plain()
+        console.summary(f"共 {len(names)} 个 bucket")
         return 0
     console.error(f"未知的 bucket 子命令：{action}")
     return 1

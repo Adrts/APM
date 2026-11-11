@@ -45,14 +45,14 @@ OPTION_DOCS: dict[str, str] = {
     "填写后 GitHub 下载地址改写为「前缀 + 原始地址」，例如 https://mirror.example.com/ ，"
     "用于绕过网络对 GitHub 的限速",
     "download.mirror.sourceforge": "SourceForge 加速前缀，留空表示直连。填写后改写规则同上",
-    "verify.method": "校验方式：hashlib（Python 标准库计算哈希并比对 manifest 的 hash）/ "
-    "7zip（调用 7z.exe 计算哈希，manifest 无 hash 时顺带做压缩包完整性测试）",
+    "verify.method": "校验方式：hashlib（Python 标准库计算哈希并比对清单的 hash）/ "
+    "7zip（调用 7z.exe 计算哈希，清单无 hash 时顺带做压缩包完整性测试）",
     "verify.seven_zip": "7z.exe 完整路径，留空表示按「本配置项 → PATH → apps 下已安装的 7zip」顺序查找。"
     "仅 verify.method 为 7zip 时使用",
     "extract.seven_zip": "7z.exe 完整路径，留空表示按「本配置项 → PATH → apps 下已安装的 7zip」顺序查找。"
     "zip/7z/rar/iso 等归档解压时优先使用；缺失时 zip/tar 回退标准库解压，其余格式直接报错",
     "extract.innounp": "innounp.exe 完整路径，留空表示按「本配置项 → PATH → apps 下已安装的 innounp」顺序查找。"
-    "manifest 标记 innosetup 的 .exe 安装包解包必需，缺失直接报错",
+    "清单标记 innosetup 的 .exe 安装包解包必需，缺失直接报错",
 }
 
 
@@ -150,10 +150,10 @@ def _validate(node: Any, defaults: dict[str, Any], prefix: str) -> None:
         if path == "download.backend" and value not in BACKENDS:
             raise ConfigError(
                 f"配置项 download.backend 取值无效：{value}"
-                f"（可选：{', '.join(BACKENDS)}）"
+                f"（可选：{' / '.join(BACKENDS)}）"
             )
         if path == "verify.method" and value not in VERIFY_METHODS:
             raise ConfigError(
                 f"配置项 verify.method 取值无效：{value}"
-                f"（可选：{', '.join(VERIFY_METHODS)}）"
+                f"（可选：{' / '.join(VERIFY_METHODS)}）"
             )

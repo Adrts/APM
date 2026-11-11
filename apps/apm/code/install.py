@@ -64,7 +64,7 @@ def install_apps(
     failures = [result for result in results if not result.ok]
     if failures:
         console.failure_list(
-            [f"{result.item.app}: {result.error}" for result in failures]
+            [f"{result.item.app}：{result.error}" for result in failures]
         )
         console.error("下载阶段失败，已终止安装，未修改已安装内容")
         return 1
@@ -72,7 +72,7 @@ def install_apps(
     if download_only:
         for result in results:
             console.plain(str(result.item.path))
-        console.success("下载与校验完成")
+        console.success("下载与校验已完成")
         return 0
 
     by_path = {result.item.path: result for result in results}
@@ -80,13 +80,13 @@ def install_apps(
         try:
             _install_one(ref, cfg, by_path)
         except ApmError as exc:
-            console.failure_list([f"{ref.app}: {exc}"])
+            console.failure_list([f"{ref.app}：{exc}"])
             return 1
         except Exception as exc:  # noqa: BLE001
-            console.failure_list([f"{ref.app}: {exc}"])
+            console.failure_list([f"{ref.app}：{exc}"])
             return 1
 
-    console.success("全部安装完成")
+    console.success("已全部安装完成")
     return 0
 
 
@@ -116,18 +116,18 @@ def update_apps(targets: list[str]) -> int:
         try:
             ref = manifest.load_app(item.app, item.bucket)
         except ApmError as exc:
-            console.warn(f"无法读取 {item.app} 的 manifest，跳过：{exc}")
+            console.warn(f"无法读取 {item.app} 的清单，跳过：{exc}")
             errors += 1
             continue
         if ref.version == item.version:
             console.info(f"{item.app} 已是最新（{item.version}）")
             continue
-        console.info(f"{item.app}：{item.version} -> {ref.version}")
+        console.info(f"更新 {item.app}：{item.version} -> {ref.version}")
         specs.append(f"{ref.bucket}/{item.app}")
     if not specs:
         if errors:
             return 1
-        console.success("所有应用均已是最新")
+        console.success("所有应用均已是最新版本")
         return 0
     result = install_apps(specs, for_update=True)
     return 1 if errors else result
@@ -624,7 +624,6 @@ def _show_notes(
             "$persist_dir": str(persist_dir),
         },
     )
-    console.plain()
-    console.plain("Notes")
-    console.plain("-----")
+    console.heading("Notes")
     console.plain(notes)
+    console.plain()

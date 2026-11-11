@@ -256,7 +256,7 @@ def _download_one(
 ) -> DownloadResult:
     backend = _backend_name(config)
     cookie = _cookie_header(item.cookie)
-    label = f"下载 {item.app} {item.version} ({item.path.name})"
+    label = f"下载 {item.app} {item.version}（{item.path.name}）"
     ensure_dir(item.path.parent)
     tmp = item.path.with_name(item.path.name + ".download")
 
@@ -316,7 +316,7 @@ def _download_one(
             control = Path(str(item.path) + ".aria2")
             if control.exists():
                 remove_path(control)
-        console.success(f"完成 {item.path.name}")
+        console.success(f"已下载 {item.path.name}")
         return DownloadResult(item=item, ok=True)
     except Exception as exc:  # noqa: BLE001 - failures are reported per item
         _purge(tmp if tmp.exists() else item.path)
@@ -339,7 +339,7 @@ def download_all(items: list[DownloadItem], config: dict[str, Any]) -> list[Down
         config.get("download", {}).get("concurrency", {}).get("apps", 3)
     )
     concurrency = max(1, concurrency)
-    progress = concurrency == 1 and console.color
+    progress = concurrency == 1 and console.tty
     results: dict[int, DownloadResult] = {}
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
         futures = {
@@ -347,7 +347,7 @@ def download_all(items: list[DownloadItem], config: dict[str, Any]) -> list[Down
                 _download_one,
                 item,
                 config,
-                progress and console.color,
+                progress,
                 item.path.exists(),
             ): index
             for index, item in enumerate(items)

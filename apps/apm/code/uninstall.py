@@ -20,9 +20,9 @@ def uninstall_apps(specs: list[str], purge: bool = False) -> int:
         try:
             _uninstall_one(app, purge)
         except ApmError as exc:
-            failures.append(f"{app}: {exc}")
+            failures.append(f"{app}：{exc}")
         except Exception as exc:  # noqa: BLE001
-            failures.append(f"{app}: {exc}")
+            failures.append(f"{app}：{exc}")
     if failures:
         console.failure_list(failures)
         return 1
@@ -150,9 +150,9 @@ def _uninstall_one(app: str, purge: bool) -> None:
 
     if purge:
         remove_path(paths.persist_app_dir(app))
-        console.info(f"已清空 persist：{app}")
+        console.info(f"已删除 persist 数据：{app}")
     else:
-        console.info(f"保留 persist：{persist_dir}")
+        console.info(f"保留 persist 数据：{persist_dir}")
 
     for file_path in (
         installed.meta_path(app),

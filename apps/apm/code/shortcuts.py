@@ -36,10 +36,10 @@ def create(
     icon: Path | None = None,
 ) -> bool:
     if not target.is_file():
-        console.warn(f"创建快捷方式失败，目标不存在：{target}")
+        console.warn(f"创建快捷方式失败（目标不存在）：{target}")
         return False
     if icon is not None and not icon.is_file():
-        console.warn(f"创建快捷方式失败，图标不存在：{icon}")
+        console.warn(f"创建快捷方式失败（图标不存在）：{icon}")
         return False
     link = shortcut_path(app, name)
     ensure_dir(link.parent)

@@ -119,7 +119,7 @@ def verify_file(
     if not hash_value:
         actual = compute_hash(path, "sha256")
         console.warn(
-            f"manifest 未提供 hash：{path.name}\n实际 SHA-256：{actual}"
+            f"清单未提供 hash：{path.name}\n实际 SHA-256：{actual}"
         )
         return True, None
     try:

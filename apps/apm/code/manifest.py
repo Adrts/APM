@@ -117,7 +117,7 @@ def manifest_urls(data: dict[str, Any], arch: str) -> list[str]:
     raw = arch_specific(data, arch, "url")
     urls = [str(item) for item in normalize_list(raw) if item]
     if not urls:
-        raise ManifestError("manifest 中缺少 url")
+        raise ManifestError("清单中缺少 url")
     for url in urls:
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https"):
@@ -188,20 +188,20 @@ def parse_app_spec(spec: str) -> tuple[str | None, str, str | None]:
 
 def validate_manifest(data: Any, app: str) -> dict[str, Any]:
     if not isinstance(data, dict):
-        raise ManifestError(f"manifest 必须是 JSON 对象：{app}")
+        raise ManifestError(f"清单必须是 JSON 对象：{app}")
     version = data.get("version")
     if not isinstance(version, str) or not version:
-        raise ManifestError(f"manifest 缺少 version：{app}")
+        raise ManifestError(f"清单缺少 version：{app}")
     if version != "nightly" and not VERSION_RE.match(version):
-        raise ManifestError(f"manifest 的 version 格式无效：{version}")
+        raise ManifestError(f"清单的 version 格式无效：{version}")
     homepage = data.get("homepage")
     if not isinstance(homepage, str) or not homepage:
-        raise ManifestError(f"manifest 缺少 homepage：{app}")
+        raise ManifestError(f"清单缺少 homepage：{app}")
     if "license" not in data:
-        raise ManifestError(f"manifest 缺少 license：{app}")
+        raise ManifestError(f"清单缺少 license：{app}")
     architecture = data.get("architecture")
     if architecture is not None and not isinstance(architecture, dict):
-        raise ManifestError(f"manifest 的 architecture 字段格式无效：{app}")
+        raise ManifestError(f"清单的 architecture 字段格式无效：{app}")
     return data
 
 
@@ -210,7 +210,7 @@ def load_app(app: str, bucket: str | None = None, pinned_version: str | None = N
     try:
         data = validate_manifest(read_json(path), app)
     except (OSError, ValueError) as exc:
-        raise ManifestError(f"manifest 解析失败：{path}\n{exc}") from exc
+        raise ManifestError(f"清单解析失败：{path}\n{exc}") from exc
     if pinned_version and data.get("version") != pinned_version:
         raise ManifestError(
             f"bucket 只提供当前版本 {data.get('version')}，无法安装 {app}@{pinned_version}"
@@ -218,7 +218,7 @@ def load_app(app: str, bucket: str | None = None, pinned_version: str | None = N
     try:
         arch = select_architecture(data)
     except ManifestError as exc:
-        raise ManifestError(f"{app}: {exc}") from exc
+        raise ManifestError(f"{app}：{exc}") from exc
     return AppRef(
         app=sanitary_name(app),
         bucket=bucket_name,
