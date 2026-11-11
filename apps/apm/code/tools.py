@@ -16,22 +16,31 @@ def _configured_path(value: Any) -> Path | None:
     return Path(text).expanduser() if text else None
 
 
-def resolve_tool(explicit: Any, exe_name: str, app_name: str) -> Path | None:
-    configured = _configured_path(explicit)
-    if configured and configured.is_file():
-        return configured
+def find_executable(exe_name: str) -> Path | None:
+    """优先返回 APM 生成的命令入口，其次从 PATH 查找。"""
+    shim = paths.SHIM_DIR / exe_name
+    if shim.is_file():
+        return shim
     found = shutil.which(exe_name)
-    if found:
-        return Path(found)
-    bundled = paths.APPS_DIR / app_name / "current" / exe_name
-    if bundled.is_file():
-        return bundled
-    return None
+    return Path(found) if found else None
+
+
+def resolve_tool(explicit: Any, exe_name: str) -> Path | None:
+    configured = _configured_path(explicit)
+    if configured:
+        if configured.is_file():
+            return configured
+        raise ToolError(
+            msg.ERR_TOOL_CONFIGURED_MISSING.format(
+                name=exe_name, path=configured
+            )
+        )
+    return find_executable(exe_name)
 
 
 def find_7z(config: dict[str, Any], section: str = "extract") -> Path | None:
     explicit = config.get(section, {}).get("seven_zip")
-    return resolve_tool(explicit, "7z.exe", "7zip")
+    return resolve_tool(explicit, "7z.exe")
 
 
 def require_7z(config: dict[str, Any], section: str = "extract") -> Path:
@@ -43,7 +52,7 @@ def require_7z(config: dict[str, Any], section: str = "extract") -> Path:
 
 def find_innounp(config: dict[str, Any]) -> Path | None:
     explicit = config.get("extract", {}).get("innounp")
-    return resolve_tool(explicit, "innounp.exe", "innounp")
+    return resolve_tool(explicit, "innounp.exe")
 
 
 def require_innounp(config: dict[str, Any]) -> Path:
@@ -64,11 +73,7 @@ def find_backend(name: str) -> Path | None:
     exe = BACKEND_EXES.get(name)
     if not exe:
         return None
-    shim = paths.SHIM_DIR / exe
-    if shim.is_file():
-        return shim
-    found = shutil.which(exe)
-    return Path(found) if found else None
+    return find_executable(exe)
 
 
 def run_tool(cmd: list[str], cwd: Path | None = None):

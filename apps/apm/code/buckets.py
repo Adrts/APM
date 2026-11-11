@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 from pathlib import Path
 
-from . import messages as msg
+from . import messages as msg, tools
 from . import paths
 from .errors import BucketError, ManifestError
 from .known_buckets import KNOWN_BUCKETS
@@ -112,9 +111,10 @@ def iter_manifests() -> list[tuple[str, str, Path]]:
 
 def bucket_source(name: str) -> str:
     root = bucket_root(name)
-    if (root / ".git").exists() and shutil.which("git"):
+    git = tools.find_executable("git.exe")
+    if (root / ".git").exists() and git:
         try:
-            proc = run(["git", "-C", str(root), "config", "--get", "remote.origin.url"])
+            proc = run([str(git), "-C", str(root), "config", "--get", "remote.origin.url"])
         except OSError:
             return str(root)
         if proc.returncode == 0 and proc.stdout.strip():
@@ -135,7 +135,8 @@ def manifest_count(name: str) -> int:
 def add_bucket(name: str, repo: str | None = None) -> None:
     if not BUCKET_NAME_RE.match(name):
         raise BucketError(msg.ERR_BUCKET_NAME_INVALID.format(name=name))
-    if not shutil.which("git"):
+    git = tools.find_executable("git.exe")
+    if not git:
         raise BucketError(msg.ERR_GIT_MISSING)
     root = bucket_root(name)
     if root.exists():
@@ -148,7 +149,7 @@ def add_bucket(name: str, repo: str | None = None) -> None:
     console.info(msg.MSG_BUCKET_ADDING.format(name=name, repo=repo))
     proc = run(
         [
-            "git",
+            str(git),
             "clone",
             "--depth",
             "1",
@@ -187,14 +188,17 @@ def update_bucket(name: str) -> None:
         raise BucketError(msg.ERR_BUCKET_NOT_FOUND.format(name=name))
     if not (root / ".git").exists():
         raise BucketError(msg.ERR_BUCKET_NOT_GIT.format(name=name))
-    if not shutil.which("git"):
+    git = tools.find_executable("git.exe")
+    if not git:
         raise BucketError(msg.ERR_GIT_MISSING)
-    fetch = run(["git", "-C", str(root), "fetch", "--depth", "1", "--no-tags", "origin"])
+    fetch = run(
+        [str(git), "-C", str(root), "fetch", "--depth", "1", "--no-tags", "origin"]
+    )
     if fetch.returncode != 0:
         raise BucketError(
             (fetch.stderr or fetch.stdout).strip() or msg.ERR_GIT_FETCH
         )
-    reset = run(["git", "-C", str(root), "reset", "--hard", "FETCH_HEAD"])
+    reset = run([str(git), "-C", str(root), "reset", "--hard", "FETCH_HEAD"])
     if reset.returncode != 0:
         raise BucketError(
             (reset.stderr or reset.stdout).strip() or msg.ERR_GIT_RESET

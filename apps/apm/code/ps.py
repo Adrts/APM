@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from . import messages as msg, paths
+from . import messages as msg, paths, tools
 from .errors import InstallError, ToolError
 from .output import console
 from .util import split_windows_args
@@ -16,9 +16,9 @@ from .util import split_windows_args
 
 def find_powershell() -> str:
     for name in ("powershell.exe", "pwsh.exe"):
-        found = shutil.which(name)
+        found = tools.find_executable(name)
         if found:
-            return found
+            return str(found)
     raise ToolError(msg.ERR_POWERSHELL_MISSING)
 
 

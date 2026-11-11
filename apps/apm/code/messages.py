@@ -248,7 +248,7 @@ ERR_BUCKET_NOT_GIT = "软件源 '{name}' 不是 git 仓库，无法更新"
 ERR_BUCKET_DELETE_INCOMPLETE = "软件源 '{name}' 删除不完整，请关闭占用后重试"
 ERR_BUCKET_ADD_FAILED = "添加软件源失败：{name}\n{detail}"
 ERR_BUCKET_UNKNOWN = "未知软件源：{name}，请显式提供仓库地址"
-ERR_GIT_MISSING = "未检测到 git，请先安装 git 并加入 PATH"
+ERR_GIT_MISSING = "未检测到 git，请安装 git 或将其所在目录加入 PATH"
 ERR_APP_NOT_FOUND = "找不到应用 '{app}'，可运行 apm search {app} 查看"
 ERR_APP_NOT_FOUND_IN_BUCKET = "软件源 '{bucket}' 中找不到应用 '{app}'"
 
@@ -411,6 +411,7 @@ ERR_7Z_MISSING = (
 ERR_INNOUNP_MISSING = (
     "未检测到 innounp.exe，请安装 innounp 并在配置中设置 extract.innounp"
 )
+ERR_TOOL_CONFIGURED_MISSING = "配置的 {name} 路径不存在：{path}"
 ERR_POWERSHELL_MISSING = "未检测到 PowerShell，无法执行安装脚本"
 MSG_HOOK_RUNNING = "执行{hook}脚本"
 ERR_HOOK_FAILED = "{hook}脚本执行失败（退出码 {code}）\n{detail}"
@@ -464,12 +465,12 @@ CONFIG_DOCS: dict[str, str] = {
     "download.mirror.sourceforge": "SourceForge 加速前缀，留空表示直连。填写后改写规则同上",
     "verify.method": "校验方式：hashlib（Python 标准库计算哈希并比对清单的哈希值）/ "
     "7zip（调用 7z.exe 计算哈希，清单无哈希值时顺带做压缩包完整性测试）",
-    "verify.seven_zip": "7z.exe 完整路径，留空表示按「本配置项 → PATH → apps 下已安装的 7zip」顺序查找。"
+    "verify.seven_zip": "7z.exe 完整路径，留空表示按「shims → PATH」顺序查找；填写后必须存在，否则报错。"
     r"JSON 中反斜杠需写成 \\，例如 C:\\Program Files\\7-Zip\\7z.exe。"
     "仅 verify.method 为 7zip 时使用",
-    "extract.seven_zip": "7z.exe 完整路径，留空表示按「本配置项 → PATH → apps 下已安装的 7zip」顺序查找。"
+    "extract.seven_zip": "7z.exe 完整路径，留空表示按「shims → PATH」顺序查找；填写后必须存在，否则报错。"
     r"JSON 中反斜杠需写成 \\，例如 C:\\Program Files\\7-Zip\\7z.exe。"
     "zip/7z/rar/iso 等归档解压时优先使用；缺失时 zip/tar 回退标准库解压，其余格式直接报错",
-    "extract.innounp": "innounp.exe 完整路径，留空表示按「本配置项 → PATH → apps 下已安装的 innounp」顺序查找。"
+    "extract.innounp": "innounp.exe 完整路径，留空表示按「shims → PATH」顺序查找；填写后必须存在，否则报错。"
     "清单标记 innosetup 的 .exe 安装包解包必需，缺失直接报错",
 }

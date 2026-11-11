@@ -363,7 +363,7 @@ apps\<app>\
 
 `7zip` 分支：
 
-- 7z 查找顺序：`verify.seven_zip` → PATH 中的 `7z.exe` → `<APM_ROOT>\apps\7zip\current\7z.exe`；找不到直接报错。
+- 7z 查找顺序：`verify.seven_zip` → `shims\7z.exe` → PATH 中的 `7z.exe`；配置项填写后文件必须存在，否则直接报错，不静默回退。
 - manifest 有 `hash`：执行 `7z h -scrc<算法> "<文件>"`（例如 `-scrcSHA256`），从输出中解析 `<算法> for data: <哈希>` 并与 manifest 对比；7-Zip 不支持该算法时直接报错。
 - manifest 无 `hash`：退化为 `7z t -y "<文件>"` 完整性测试。退出码 `0` 通过，`1` 警告后继续；识别为非压缩包时警告后继续；其他退出码失败。
 - 校验失败：删除文件与临时文件，标记该包失败，不重试。
@@ -387,7 +387,8 @@ apps\<app>\
 
 实现要点：
 
-- 外部工具查找顺序：配置项（`extract.seven_zip` / `extract.innounp`）→ PATH → `<APM_ROOT>\apps\<tool>\current\<exe>`。
+- 外部工具查找顺序：配置项（`extract.seven_zip` / `extract.innounp`）→ `shims\<exe>` → PATH；配置项填写后文件必须存在，否则直接报错。
+- 可安装的外部工具（`git`、`7z`、`innounp`、`curl`、`wget`、`aria2c`、`pwsh`）统一按上述顺序解析；`msiexec`、`cmd` 等 Windows 内置组件直接调用系统命令，不经过 `shims`。
 - 解压目标为 `apps\<app>\<version>\`。存在 `extract_dir` 时先解压到临时目录 `_tmp`，再把 `_tmp\<extract_dir>` 移到版本根目录，最后删除 `_tmp`。
 - `extract_dir` 为数组时，按实际发生解压的安装包顺序一一对应，不是候选回退；不需要解压的安装包不占用下标。
 - `extract_to` 当前未实现：检测到该字段时输出警告并忽略。
@@ -861,7 +862,9 @@ flowchart TD
     D --> E{"是否找到"}
     E -->|"否"| F["报错：Unknown bucket"]
     E -->|"是"| C
-    C --> G{"buckets/name 是否已存在"}
+    C --> G0{"找到 git 程序入口：shims → PATH"}
+    G0 -->|"否"| G1["报错：未检测到 git"]
+    G0 -->|"是"| G{"buckets/name 是否已存在"}
     G -->|"是"| H["报错：bucket 已存在"]
     G -->|"否"| I["git clone --depth 1 --single-branch --no-tags"]
     I --> J{"是否存在 bucket 子目录"}
@@ -876,7 +879,9 @@ flowchart TD
 ```mermaid
 flowchart TD
     A["apm update 或 apm update --all（* 等价）"] --> B["枚举目标 bucket"]
-    B --> C["git fetch --depth 1 --no-tags origin"]
+    B --> B0{"找到 git 程序入口：shims → PATH"}
+    B0 -->|"否"| F["保留旧索引，记录失败，继续下一个"]
+    B0 -->|"是"| C["git fetch --depth 1 --no-tags origin"]
     C --> D{"fetch 是否成功"}
     D -->|"是"| E["git reset --hard FETCH_HEAD"]
     D -->|"否"| F["保留旧索引，记录失败，继续下一个"]
@@ -1098,7 +1103,7 @@ flowchart TD
     H1 -->|"一致"| Z["该包校验通过，返回下载任务"]
     H1 -->|"不一致"| HF["删除文件，标记该包失败，不重试"]
 
-    B -->|"7zip"| S0{"检测 7z.exe"}
+    B -->|"7zip"| S0{"搜索 7z.exe 入口：配置项 → shims → PATH"}
     S0 -->|"不存在"| SE["标记该包失败：未检测到 7z"]
     S0 -->|"存在"| S1{"manifest 是否带 hash"}
     S1 -->|"有"| S2["7z h -scrc（算法）计算"]
@@ -1122,10 +1127,10 @@ flowchart TD
     A["阶段二：准备解压"] --> V["标准库解压前逐条目校验路径、链接与保留名"]
     V --> B{"按扩展名分派"}
 
-    B -->|"zip / nupkg"| C{"是否找到 7z"}
+    B -->|"zip / nupkg"| C{"找到 7z 入口（配置项 → shims → PATH）"}
     C -->|"是"| D["7z x 解压"]
     C -->|"否"| E["zipfile 解压到临时目录后合并"]
-    B -->|"7z / rar / iso / 001 / tar.zst 等"| F{"是否找到 7z"}
+    B -->|"7z / rar / iso / 001 / tar.zst 等"| F{"找到 7z 入口（配置项 → shims → PATH）"}
     F -->|"否"| G["报错：缺少 7z"]
     F -->|"是"| D
     B -->|"tar 系列"| H["tarfile 解压到临时目录后合并"]
@@ -1140,7 +1145,7 @@ flowchart TD
     S2 --> R
     B -->|"msi"| I["msiexec /a 解包"]
     I --> R
-    B -->|"exe 且 innosetup"| J{"是否找到 innounp"}
+    B -->|"exe 且 innosetup"| J{"找到 innounp 入口（配置项 → shims → PATH）"}
     J -->|"否"| K["报错：缺少 innounp"]
     J -->|"是"| L["innounp -x 解包"]
     L --> R
