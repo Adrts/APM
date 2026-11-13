@@ -150,8 +150,8 @@ def install_apps(
 
     console.plain()
     console.plain(msg.LIST_INSTALLED_TITLE)
-    for app, version in done:
-        console.plain(f"  {app} {version}")
+    for app, _version in done:
+        console.plain(f"  {app}")
     console.success(msg.MSG_COMPLETE)
     return 0
 

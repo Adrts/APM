@@ -18,5 +18,3 @@ shims/*
 !shims/requirements.txt
 __pycache__/
 *.py[cod]
-.*tmp*/
-.*temp*/

@@ -44,13 +44,20 @@ BAR_INTERVAL = 0.12
 BAR_INNER = 24
 BAR_SPEED_WIDTH = 10
 BAR_SIZE_WIDTH = 10
+# 终端宽度低于该值时不启用进度条（行会折行导致重绘错位），回退为普通状态行。
+BAR_MIN_TERMINAL = 84
+BAR_DESC_MIN = 15
+BAR_DESC_MAX = 40
+BAR_SAFETY = 2
 BAR_DOWNLOAD_FIXED = 66
-BAR_DOWNLOAD_DESC_MIN = 12
-BAR_DOWNLOAD_DESC_MAX = 40
-BAR_STEP_FIXED = 39
-BAR_STEP_DESC_MIN = 16
-BAR_STEP_DESC_MAX = 56
 BAR_MAX_MESSAGES = 8
+
+# 进度条描述列宽：下载条与步骤条共用同一公式，保证进度块起始列对齐。
+# fixed 为该样式 widgets 区的固定宽度（下载条最宽，以它为基准）。
+def _bar_desc_width(width: int) -> int:
+    return min(
+        BAR_DESC_MAX, max(BAR_DESC_MIN, width - BAR_DOWNLOAD_FIXED - BAR_SAFETY)
+    )
 
 # ANSI 光标控制（进度条块重绘）。
 _CURSOR_UP = "\x1b[{}A"
@@ -139,18 +146,12 @@ class Bar:
     def render(self, width: int) -> str:
         elapsed = self.elapsed()
         time_text = f"{int(elapsed) // 60:02d}m{int(elapsed) % 60:02d}s"
+        desc_width = _bar_desc_width(width)
         if self.style == Bar.STYLE_STEP:
-            desc_width = min(
-                BAR_STEP_DESC_MAX, max(BAR_STEP_DESC_MIN, width - BAR_STEP_FIXED)
-            )
             pct = 100 if (self.finished and self.ok) else None
             percent = f"{pct:3d}%" if pct is not None else "    "
             widgets = f"{percent} {bar_widget(elapsed, pct)} {time_text}"
         else:
-            desc_width = min(
-                BAR_DOWNLOAD_DESC_MAX,
-                max(BAR_DOWNLOAD_DESC_MIN, width - BAR_DOWNLOAD_FIXED),
-            )
             if self.total:
                 pct = (
                     100
@@ -305,8 +306,8 @@ class Console:
     # ------------------------------------------------------------ 进度条块
 
     def bar_start(self, desc: str, style: str) -> Bar | None:
-        """开始一条进度条；非 TTY 返回 None，由调用方回退为普通状态行。"""
-        if not self.tty:
+        """开始一条进度条；非 TTY 或终端过窄时返回 None，回退为普通状态行。"""
+        if not self.tty or terminal_columns() < BAR_MIN_TERMINAL:
             return None
         bar = Bar(desc, style, keep_on_finish=style == Bar.STYLE_DOWNLOAD)
         with self._lock:
@@ -460,11 +461,7 @@ class Console:
             f"{pad_text(size_text, BAR_SIZE_WIDTH, 'right')} | {time_text}"
         )
         desc = f"[{count}/{count}] 总计"
-        desc_width = min(
-            BAR_DOWNLOAD_DESC_MAX,
-            max(BAR_DOWNLOAD_DESC_MIN, width - BAR_DOWNLOAD_FIXED),
-        )
-        return f"{pad_text(fit_text(desc, desc_width), desc_width)} {widgets}"
+        return f"{pad_text(fit_text(desc, _bar_desc_width(width)), _bar_desc_width(width))} {widgets}"
 
     # ------------------------------------------------------------ 事务表
 

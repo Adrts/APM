@@ -127,9 +127,22 @@ class ApmArgumentParser(argparse.ArgumentParser):
 
 
 def _configure_parser(parser: argparse.ArgumentParser) -> None:
+    """子命令解析器公共配置：中文标题与标准 -h。"""
     parser._positionals.title = msg.HELP_SECTION_POSITIONAL
     parser._optionals.title = msg.HELP_SECTION_OPTIONS
     parser.add_argument("-h", "--help", action="help", help=msg.HELP_OPTION_HELP)
+
+
+class ApmRootHelpAction(argparse._HelpAction):
+    """根解析器的 -h/--help：根帮助之后追加别名与常用参数说明。
+
+    与 apm / apm help 的输出共用同一渲染，保证各种触发方式结果一致。
+    """
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        parser.print_help()
+        _print_help_notes()
+        parser.exit()
 
 
 def _add_parser(
@@ -165,7 +178,11 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argument
         formatter_class=ApmHelpFormatter,
         add_help=False,
     )
-    _configure_parser(parser)
+    parser._positionals.title = msg.HELP_SECTION_POSITIONAL
+    parser._optionals.title = msg.HELP_SECTION_OPTIONS
+    parser.add_argument(
+        "-h", "--help", action=ApmRootHelpAction, help=msg.HELP_OPTION_HELP
+    )
     parser.add_argument(
         "--version",
         action="version",
