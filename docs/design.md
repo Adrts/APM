@@ -140,7 +140,7 @@ APM 不修改 bucket 中的 manifest，解析层负责把 Scoop 的字段语义�
 | `ps.py` | 内联 PowerShell 钩子与 installer 执行 |
 | `tools.py` | 7-Zip / innounp / 下载后端的外部工具查找 |
 | `query.py` | list、search、info、status、cleanup |
-| `output.py` | 统一 `[apm]` 前缀、着色、表头/汇总、失败清单与进度行 |
+| `output.py` | 状态行着色、事务表、失败清单与 DNF 风格进度条块（`Bar` 状态渲染 + 动画重绘 + 消息捕获） |
 | `messages.py` | 全部用户可见文案、argparse 中文帮助文本与参数错误映射 |
 | `util.py` | 路径、junction、硬链接、JSON、长路径等基础工具 |
 | `errors.py` | `ApmError` 及分类异常 |
@@ -155,14 +155,19 @@ APM 不修改 bucket 中的 manifest，解析层负责把 Scoop 的字段语义�
 ```text
 阶段一：准备
   解析命令参数
-  → 定位 bucket 与 manifest（含依赖）
+  → 展开 app 通配符（如 open*），定位 bucket 与 manifest（含依赖）
   → 汇总下载清单并去重
+  → 输出事务表（安装/更新/安装依赖分节）与事务摘要
+  → 二次确认（是否继续执行事务？[y/N]，--yes 跳过；取消则终止）
   → 检查 cache，已命中的直接复用
   → 并行下载到 cache 并校验哈希
   → 单个失败不取消其他下载，APM 层不重试
   → 全部结束后只要有失败，终止整个安装流程
 
 阶段二：提交（串行）
+  → 输出「执行事务：」标题与步骤进度条（参照 DNF：运行中显示 <=> 弹跳
+    动画与用时，完成后定格为 100% 行；--verbose 时步骤明细就地显示在
+    进度条下方并固化为历史行，默认隐藏）
   → 按依赖顺序逐个解压到 apps\<app>\<version>\
   → 执行 pre_install
   → 运行 installer（如有）
@@ -171,7 +176,10 @@ APM 不修改 bucket 中的 manifest，解析层负责把 Scoop 的字段语义�
   → 执行 post_install
   → 删除旧版本目录（仅升级时）
   → 写入安装元数据
+  → 输出「已安装：」最终清单与「完成！」
 ```
+
+事务表与事务显示参照 DNF：`=` 框线表头（应用 / 版本 / 软件源，卸载另加大小列），`安装：`、`更新：`、`安装依赖：`、`卸载：` 分节，应用名按操作着色（安装/更新绿色、卸载红色）；事务摘要中安装计数含依赖（与 DNF 一致）。卸载在执行前汇总目标并估算目录大小。
 
 命令入口方式（对齐 Scoop 的 `shim` 函数）：为 manifest 中每个 `bin` 条目在 `<APM_ROOT>\shims\` 生成命令入口，按目标后缀分派——
 
@@ -288,7 +296,7 @@ apps\<app>\
 - 不提供自动选择：指定的后端未安装或不可用时直接报错，不静默切换。
 - 外部后端（`aria2c.exe` / `curl.exe` / `wget.exe`）按「`shims\<exe>` → PATH」两阶段查找：先找 APM 生成的用户级命令入口，未安装时才使用 PATH 中的系统版本。`shims` 入口由 manifest 的 `bin` 生成，能覆盖任意应用名和安装布局，不直接按应用目录猜测路径。
 - 之所以不能依赖 PATH：Windows 组合环境块时，`Path` 是唯一被拼接而非覆盖的变量，顺序固定为「系统 PATH（HKLM）在前、用户 PATH（HKCU）追加在后」。因此 `env_add_path` 的前插只作用于用户段，永远排在 `C:\Windows\System32` 之后；系统自带 `curl.exe` 会先于 APM 的 `shims\curl.exe` 命中。`where <exe>` 可直接验证该顺序。
-- 无论使用哪个后端，**哈希校验、缓存落盘、进度展示与失败清理由 APM 统一负责**，外部后端只负责将字节写入临时文件。
+- 无论使用哪个后端，**哈希校验、缓存落盘、进度展示与失败清理由 APM 统一负责**，外部后端只负责将字节写入临时文件。python 后端有字节级回调，进度条实时推进；curl / wget / aria2 后端无字节级进度，进度条统一以 `<=>` 弹跳动画模拟，完成时定格真实大小。
 - User-Agent 统一为 `APM/0.1`；`python` 与 `curl` 显式设置，`wget`、`aria2` 通过各自参数设置。
 - 超时：`python` 60 秒；`curl` 连接超时 30 秒；`wget` 60 秒；`aria2` 使用自身默认值。
 - 重定向：`python`、`curl`、`wget` 跟随；`aria2` 使用自身默认行为。
@@ -312,8 +320,9 @@ apps\<app>\
 - 断点续传：暂不规划。APM 层不实现续传；外部下载器自身的行为（如 aria2 的 `.aria2` 控制文件）不纳入保证范围。
 - 重试：APM 层不发起重试；四种后端均显式只尝试一次——`curl` 用 `--retry 0`、`aria2` 用 `--max-tries=1`、`wget` 用 `--tries=1`、`python` 单次请求不循环。
 - 并发分两级，均由配置项控制，互不混用：
-  - 多软件并发：同时下载的安装包数量，对应 `download.concurrency.apps`。
+  - 多软件并发：同时下载的安装包数量，对应 `download.concurrency.apps`，由信号量限流（daemon 下载线程池按需启动）。
   - 单文件分片并发：单个安装包的分片连接数，对应 `download.concurrency.segments`，仅对支持分片的后端（`aria2`）生效；`python`、`curl`、`wget` 固定为 1。
+- Ctrl+C 立即退出：下载线程全部为 daemon 线程，主线程的 join 被 ^C 打断后设置中断信号（协作循环与外部子进程轮询据此快速退出）并不再等待任何 worker——worker 可能阻塞在连接阶段（最长 60s 超时）而被进程退出直接回收；残留的 `.download` 临时文件由下次下载开头的清理逻辑回收。
 - 分片大小不作为配置项，交由下载器使用自身默认值（例如 aria2 不传 `--min-split-size`）。
 - 临时文件命名与 Scoop 一致：
   - 非 aria2 后端先写入 `<缓存文件名>.download`，校验通过后再重命名为正式缓存文件。
@@ -496,13 +505,33 @@ Windows 的 `PATHEXT` 默认不包含 `.PY`，直接输入 `apm` 不会执行 Py
 
 | 方案 | 是否同窗口 | 兼容性 | 结论 |
 | --- | --- | --- | --- |
-| `apm.cmd` | 是 | cmd 与 PowerShell 都能从 PATH 解析 | 主入口 |
+| `apm.exe`（vendored shim 副本 + `apm.shim` 旁车） | 是 | 最好，无 cmd 中转，Ctrl+C 立即退出 | **主入口** |
+| `apm.cmd` | 是 | cmd 与 PowerShell 都能从 PATH 解析 | 备用入口 |
 | `apm.ps1` | 是（在 PowerShell 当前进程内执行） | 受 ExecutionPolicy 限制 | 可选补充 |
-| 原生 exe shim | 是 | 最好，无 cmd 中转，无 Ctrl+C 提示 | 后续可选 |
+| `.py` 直接入口 | — | `PATHEXT` 默认不含 `.PY` | 不提供 |
 
-结论：以 `apm.cmd` 作为主入口，`apm.ps1` 作为 PowerShell 环境下的可选入口，不提供 `.py` 直接入口。
+结论：以 `apm.exe` 作为主入口，`apm.cmd` / `apm.ps1` 作为备用入口，不提供 `.py` 直接入口。
 
-### 9.2 apm.cmd 设计
+批处理入口的固有限制：^C 打断批处理中运行的子进程时，cmd.exe 在批处理恢复执行前会弹出 `终止批处理操作吗(Y/N)?` 二次确认，且批处理文件必须保存为无 BOM 编码（UTF-8 BOM 会被 cmd 当作首行命令文本，导致 `@echo off` 失效并整屏回显命令）。`apm.exe` 无批处理包装，^C 后 Python 协作退出、进程立即结束，两种问题都不存在；UTF-8 输出改由 `apm.shim` 的 `args` 传入 `-X utf8` 保证。
+
+### 9.2 apm.exe 设计（主入口）
+
+`shims\apm.exe` 是 vendored shim（kiennq 变体）的副本，旁车文件 `shims\apm.shim`：
+
+```text
+path = "D:\Workspace\APM\.venv\Scripts\python.exe"
+args = -X utf8 "D:\Workspace\APM\apps\apm\code\__main__.py"
+```
+
+关键点：
+
+- 复制 vendored shim 前校验其 SHA-256（与安装应用的命令入口同一纪律）。
+- `.shim` 旁车写干净 CRLF、无 BOM；`path` 为 `.venv` 解释器的绝对路径（kiennq shim 不解析相对路径）。
+- `args` 固定携带 `-X utf8`，等价 `PYTHONUTF8=1`，保证中文输出不乱码。
+- shim 直接启动 `python.exe`，继承当前控制台窗口；^C 送达整个进程组，Python 协作退出后进程立即结束，无批处理二次确认。
+- `.shim` 中路径随仓库位置硬编码为绝对路径；仓库整体移动后需重新生成 `apm.shim`（删除后运行 `apm_setup.cmd` 重建）。
+
+### 9.3 apm.cmd 设计（备用入口）
 
 ```bat
 @echo off
@@ -510,7 +539,7 @@ setlocal
 for %%I in ("%~dp0..") do set "APM_ROOT=%%~fI"
 set "APM_PY=%APM_ROOT%\.venv\Scripts\python.exe"
 if not exist "%APM_PY%" (
-    echo [apm] Virtual environment not found. Run shims\apm_setup.cmd first.
+    echo Virtual environment not found. Run shims\apm_setup.cmd first.
     exit /b 1
 )
 set "PYTHONUTF8=1"
@@ -530,13 +559,13 @@ exit /b %ERRORLEVEL%
 - 只用 `.venv` 中的解释器运行，不使用系统全局环境，保证依赖版本可控。
 - 虚拟环境不存在时直接提示并退出，不静默回退到系统 Python。
 
-### 9.3 apm.ps1 设计（可选）
+### 9.4 apm.ps1 设计（可选）
 
 ```powershell
 $env:APM_ROOT = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $python = Join-Path $env:APM_ROOT '.venv\Scripts\python.exe'
 if (-not (Test-Path $python)) {
-    Write-Host '[apm] Virtual environment not found. Run shims\apm_setup.cmd first.'
+    Write-Host 'Virtual environment not found. Run shims\apm_setup.cmd first.'
     exit 1
 }
 $env:PYTHONUTF8 = '1'
@@ -684,10 +713,10 @@ exit $LASTEXITCODE
 
 | Scoop 命令 | 作用 | APM 命令 | 调整说明 |
 | --- | --- | --- | --- |
-| `scoop install <app>` | 安装应用 | `apm install <app...>` | 支持一次多个；移除 `-g`；走两阶段 |
-| `scoop uninstall <app>` | 卸载应用 | `apm uninstall <app...> [--purge]` | 默认保留 `persist`；`--purge` 同时删除 persist 数据 |
+| `scoop install <app>` | 安装应用 | `apm install <app...> [-v] [-y]` | 支持一次多个与通配符模糊匹配（`open*`）；移除 `-g`；走两阶段；`--verbose` 显示步骤明细；`--yes` 跳过二次确认 |
+| `scoop uninstall <app>` | 卸载应用 | `apm uninstall <app...> [--purge] [-v] [-y]` 或 `apm uninstall --all` | 支持一次多个与通配符模糊匹配；`*` 单独出现等价于 `--all`（卸载全部）；默认保留 `persist`；`--purge` 同时删除 persist 数据；`--verbose` 显示步骤明细；`--yes` 跳过二次确认 |
 | `scoop update` | 更新 Scoop 与 bucket | `apm update` | 仅刷新 bucket 索引，不更新 APM 自身 |
-| `scoop update <app>` / `*` | 更新应用 | `apm update <app>` / `--all` | 保留；移除 `-g`。`--all`（或参数级别名 `*`）先刷新全部 bucket 再更新全部应用；指定应用时不刷新 bucket |
+| `scoop update <app>` / `*` | 更新应用 | `apm update <app>` / `--all` | 保留；移除 `-g`。`--all`（或参数级别名 `*`）先刷新全部 bucket 再更新全部应用；指定应用时不刷新 bucket；`--verbose` 显示步骤明细；`--yes` 跳过二次确认 |
 | `scoop status` | 检查可更新版本 | `apm status` | 保留；已锁定（hold）的应用跳过 |
 | `scoop hold <app>` / `unhold <app>` | 锁定/解除锁定版本 | `apm hold <app...>` / `apm unhold <app...>` | 保留；锁定信息存于安装元数据 `hold` 字段，update/status 跳过已锁定应用 |
 | `scoop list [query]` | 列出已安装 | `apm list [query]` | 保留；新增 `--all` 列出全部（与不带 query 等价） |
@@ -727,9 +756,9 @@ exit $LASTEXITCODE
 #### 输出通道
 
 - 状态行与表格写入 stdout；`warn` / `error` 状态行写入 stderr。
-- 日志行统一为 `[apm] 正文`；表格、字段视图、备注正文、缓存路径等数据行不带前缀。
-- 多行状态消息只在首行带 `[apm]` 前缀，后续行缩进 6 格，与正文起始列对齐。
-- 批量失败先输出 `[apm] 以下项目失败：`，再逐行输出 `  - 应用：原因`；原因的后续行缩进 4 格。
+- 状态行与表格写入 stdout；warn / error 状态行写入 stderr；全部日志行不带程序名前缀。
+- 多行状态消息后续行缩进 4 格。
+- 批量失败先输出 `以下项目失败：`（红色），再逐行输出 `  - 应用：原因`；原因的后续行缩进 4 格。
 
 #### 着色规则
 
@@ -737,15 +766,17 @@ exit $LASTEXITCODE
 
 | 元素 | 样式 |
 | --- | --- |
-| `[apm]` 前缀（info） | 青色 |
-| `[apm]` 前缀（success） | 绿色 |
-| `[apm]` 前缀（warn） | 黄色 |
-| `[apm]` 前缀（error） | 红色 |
+| 状态行正文（success） | 绿色 |
+| 状态行正文（warn） | 黄色 |
+| 状态行正文（error） | 红色 |
+| 状态行正文（info） | 不着色 |
 | 表格表头、小节标题（`Notes`） | 青色 + 加粗，下方输出暗色细分隔线 |
-| 单行原地刷新的进度行 | 青色 |
+| 事务表表头 | 青色 + 加粗、无 `-` 分隔线 |
+| 事务表应用名 | 按操作着色：安装/更新绿色，卸载红色，仅首列 |
+| 进度条行 | 运行中青色，成功定格绿色，失败红色 |
 | 消息正文、表格数据、路径、文件名、URL、备注内容、失败明细 | 不着色 |
 
-进度行只在 TTY 下输出，使用 `\r` 原地覆盖，结束时换行。非 TTY 下只保留常规状态行。
+进度条只在 TTY 下输出（非 TTY 回退为普通状态行）。进度条块使用 ANSI 光标序列整体重绘（上移 + 逐行清除），动画线程以 120ms 间隔驱动；`warn` / `error` / 标题等普通输出会先擦除块、打印后重绘，保证画面一致。
 
 命令行帮助由 argparse 自动着色；根帮助底部的别名说明不再写入 `epilog`，而是在 `print_help()` 后由 CLI 单独渲染，颜色取自 argparse 当前主题（`heading`、`action`、`summary_action`、`summary_label`、`summary_long_option`），避免与上半部分割裂，同时避免 ANSI 码参与 epilog 的换行宽度计算。旧版 Python 无 `_colorize` 时保持纯文本，与 argparse 的纯文本帮助一致。子命令帮助不输出别名说明。
 
@@ -758,7 +789,7 @@ exit $LASTEXITCODE
 
 #### 文案约定
 
-- 完成态使用 `已...`：`已安装`、`已卸载`、`已下载`、`已删除`、`已更新`、`已添加`、`已清理`、`已全部安装完成`。
+- 完成态使用 `已...`：`已卸载`、`已下载`、`已删除`、`已更新`、`已添加`、`已清理`；安装/卸载的整体完成不再使用 `已全部安装完成`，而是输出最终清单（`已安装：` / `已卸载：`）后以 `完成！` 收尾，与 DNF 的 `Complete!` 对应。
 - 过程明细使用动词短语，不加 `已`：`下载 <文件>`、`解压 <文件>`、`运行安装器 <文件>`、`创建命令入口 <名称>`、`切换 current -> <版本>`。
 - 跳过与提示使用 info：`<应用> <版本> 已安装，跳过`、`<应用> 已是最新（<版本>）`、`<应用> 已锁定，跳过`。
 - 中文消息统一使用全角标点 `：（）`，句末不加句号；版本变化统一写作 `旧版本 -> 新版本`。
@@ -784,6 +815,20 @@ exit $LASTEXITCODE
 | `bucket known` | `软件源 仓库` | `共 N 个已知软件源` |
 | `info` | 应用、版本、软件源、已安装、锁定、主页、许可证、描述、依赖、命令、建议 | 无 |
 | `download` | 每行一个缓存文件绝对路径 | 无 |
+
+#### 事务显示（install / update / uninstall / download）
+
+参照 DNF 的事务显示，install、update、uninstall 以及 download（仅阶段一）共用同一套结构：
+
+- 事务表：`=` 框线包裹青色加粗表头，分节标题不缩进（`安装：`、`更新：`、`安装依赖：`、`卸载：`），数据行首列带一个空格；列宽按显示宽度计算，`大小` 右对齐。install/update 表列为 `应用 版本 软件源`，uninstall 另加 `大小`（执行前估算版本目录大小，排除 persist 联接避免重复计数）。更新行版本列显示 `旧版本 -> 新版本`，应用名按操作着色。
+- 事务摘要：表格后输出 `事务摘要：`，安装计数含依赖（` 安装：N 个应用`，与 DNF 一致）、更新单独一行（` 更新：N 个应用`）；uninstall 为 ` 卸载：N 个应用`。摘要后输出一个空行。
+- 下载软件包：输出 `下载软件包：` 标题，随后进入下载进度条块。每个下载项一条 DNF 风格进度条 `[1/3] 文件名  45% [========          ]  2.1 MB/s |  20.3 MB | 00m12s`（编号为下载项固定序号；名称列宽随终端自适应）。python 后端实时推进字节与速度；curl / wget / aria2 后端拿不到字节级进度，统一用 `<=>` 弹跳模拟动画（dnf5 的 indeterminate 形态），完成时定格为真实文件大小与用时。多条下载共享一个块并发重绘，块底部输出 `----` 分隔线与 `[n/n] 总计` 聚合行（百分比、合计速度、合计字节、总用时）；全部结束后块定格收口。缓存命中输出 `[i/N] 使用缓存 ...` 状态行，不产生进度条。非 TTY 下回退为 `[i/N]` 编号状态行（`下载`、`使用缓存`、`已下载`）。
+- 执行事务：输出 `执行事务：` 标题，随后每个应用一条步骤进度条（参照 DNF5 的 RPM 事务条）：`[i/N] 安装 <应用> <版本>`（更新为 `[i/N] 更新 <应用>：旧 -> 新`，卸载为 `[i/N] 卸载 <应用> <版本>`），编号前置与下载行 `[i/N]` 形式一致、不带程序名前缀，运行中显示弹跳动画与用时；步骤内的解压、创建入口等明细行默认隐藏，仅 `--verbose`（install / uninstall / update）时就地显示在进度条下方（超过 8 条滚动）；步骤完成后定格为 `100% [========================] 用时`（安装附实际磁盘占用，卸载附释放空间），verbose 明细固化为历史行；失败定格行红色。非 TTY 下回退为普通步骤状态行（明细同样仅 `--verbose` 时输出）。
+- 最终清单：全部成功后输出空行 + 无前缀的最终清单（`已安装：` 每行 `  应用 版本`；`已卸载：` 每行仅 `  应用`），最后输出绿色 `完成！`；存在失败时输出失败清单、不输出 `完成！`，部分成功时仍列出已完成的清单。
+- 二次确认（参照 DNF 的 `Is this ok [y/N]:`）：install / uninstall / update 在事务表与事务摘要之后、阶段一开始之前输出 `是否继续执行事务？[y/N]`；`y` / `yes` / `是` 继续执行，回车或其他输入取消（`已取消`，退出码 1）；`--yes` / `-y` 跳过确认；`download` 只下载不确认；stdin 不可读（EOF）时视为取消。
+- 参数通配符：install / uninstall / list / search 的 app 参数支持 glob 通配符（`*`、`?`、`[seq]`，大小写不敏感；分段规则与普通 spec 一致，不经过字符清洗）。install / uninstall 在解析前把通配符展开为清单（install）或已安装清单（uninstall）中的全部匹配应用名，无匹配时按失败处理；`*` 单独出现等价于 `--all`（仅 uninstall 提供 `--all`，卸载全部已安装应用）；list / search 无通配符时保持子串匹配。
+- 事务显示分节与清单标题（`安装：`、`下载软件包：`、`执行事务：`、`已安装：` 等）为无前缀普通行，不加青色小节样式，与 DNF 的纯文本分节一致；进度条块激活期间这些标题会先擦除块再输出，随后块在下方恢复。
+- 输出模块分层：`Console` 提供状态行着色、事务表、失败清单等原语；`Bar` 承载单条进度条的状态与 DNF 风格渲染（确定进度 / `<=>` 弹跳模拟）；进度条块负责多进度条共享终端区域的整体重绘、消息捕获与动画线程。
 
 ### 12.6 预定义短别名
 
@@ -906,7 +951,10 @@ flowchart TD
         B --> C["架构选择与字段解析"]
         C --> D["递归解析 depends，生成拓扑序"]
         D --> E["汇总下载项并按缓存路径去重"]
-        E --> F["检查 cache 命中"]
+        E --> E0["输出事务表与事务摘要"]
+        E0 --> E1{"二次确认：y/N"}
+        E1 -->|"y"| F["检查 cache 命中"]
+        E1 -->|"n"| E2["已取消，退出"]
         F --> G["按并发配置下载，单个失败不中断其他任务"]
         G --> H["逐包校验哈希"]
         H --> I{"全部任务结束后是否有失败"}
@@ -944,8 +992,13 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A["apm uninstall app"] --> B["读取 install.json 与 manifest 副本"]
-    B --> C["执行 pre_uninstall"]
+    A["apm uninstall app"] --> A0["校验已安装并汇总目标：版本、bucket、目录大小"]
+    A0 --> A1["输出卸载事务表与事务摘要"]
+    A1 --> A2{"二次确认：y/N"}
+    A2 -->|"y"| B["读取 install.json 与 manifest 副本"]
+    A2 -->|"n"| A3["已取消，退出"]
+    B --> B0["输出事务步骤进度条（弹跳动画 → 100% 定格）"]
+    B0 --> C["执行 pre_uninstall"]
     C --> D["运行 uninstaller：file/args 可执行分支 + script 脚本（如有）"]
     D --> E["执行 post_uninstall"]
     E --> F["删除开始菜单快捷方式"]
@@ -1084,13 +1137,20 @@ flowchart TD
 分支规则：
 
 - 后端必须显式指定：`python` / `aria2` / `curl` / `wget`，不静默切换，也不回退到其他后端；APM 层下载失败不重试。
+- 每个分支封装为统一的 `DownloadBackend` 接口（`download.py`），四个后端的方法签名与传出完全一致：
+  - `staging_path(dest)`：本次下载的工作路径（python/curl/wget 为 `缓存名.download`，aria2 为正式缓存名本身）；
+  - `run(url, work, cookie)`：把字节写入工作路径，失败抛出 `DownloadError`，无返回值；
+  - `commit(work, dest)`：哈希校验通过后固化为正式缓存（重命名 / 清理 `.aria2` 控制文件）；
+  - `rollback(work, dest)`：失败清理本次产生的文件；
+  - `progress()`：返回 `(已完成字节, 总字节)`，由 APM 的统一轮询线程驱动进度条；不支持获取进度的后端（curl / wget / aria2）直接沿用基类空实现，恒为 `(0, 0)`，进度条保持弹跳动画。
+- python/curl/wget 共享 `TempFileBackend` 中间类（工作路径、重命名与失败清理一致），各自只实现 `run`；程序入口搜索（shims → PATH）与缺失报错在后端构造时完成。
 - 地址加速在缓存判断之后、后端选择之前执行；缓存键与哈希匹配始终使用原始 URL。镜像下载失败直接按下载失败处理，无回退、无重试。
 - 外部后端的程序入口按「`shims\<exe>` → PATH」两阶段搜索：先找 APM 生成的用户级命令入口，未安装对应应用时才使用 PATH 中的系统版本。`shims` 条目由 manifest 的 `bin` 生成，不按应用目录名或布局猜测。
 - 四种后端使用同一套流程骨架：下载 → 校验 → 通过后固化为正式缓存（aria2 额外清理 `.aria2`）；任一步失败都删除本次产生的文件并标记该包失败，不中断其他包的下载。
 - 全部下载任务结束后统一判定：只要存在失败，就终止整个安装流程，不进入阶段二；已成功下载的文件保留在 cache，供下次复用。
 - `concurrency.apps` 控制同时下载的安装包数量；`concurrency.segments` 只传给 aria2，对应 `--split` 与 `--max-connection-per-server`。python、curl、wget 的单文件并发固定为 1。
 - 分片大小不配置，使用下载器默认值。
-- 所有后端只负责把字节写入缓存目录；哈希校验、重命名和失败清理统一由 APM 执行。
+- 所有后端只负责把字节写入缓存目录；哈希校验、固化（重命名 / 清理控制文件）与失败清理按统一接口次序由 APM 执行：`run → verify → commit`，任一步失败走 `rollback` 删除本次产生的文件并标记该包失败，不中断其他包的下载。
 
 ### 13.12 校验方式分支
 

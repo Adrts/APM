@@ -43,8 +43,8 @@ def _help_theme() -> dict[str, str]:
     }
 
 
-def _print_alias_help() -> None:
-    """输出根帮助底部的别名说明，配色与 argparse 自动生成的段落一致。"""
+def _print_help_notes() -> None:
+    """输出根帮助底部的别名与常用参数说明，配色与 argparse 段落一致。"""
     theme = _help_theme()
 
     def span(kind: str, text: str) -> str:
@@ -82,6 +82,10 @@ def _print_alias_help() -> None:
             all_flag=span("option", "--all"),
         )
     )
+    console.plain()
+    console.plain(span("heading", msg.HELP_OPTIONS_TITLE))
+    console.plain(span("label", msg.HELP_OPTIONS_LINE))
+    console.plain(span("label", msg.HELP_OPTIONS_LINE_2))
     console.plain()
 
 
@@ -180,6 +184,8 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argument
         "install", help=msg.HELP_INSTALL, description=msg.HELP_INSTALL_DESC
     )
     p.add_argument("apps", nargs="+", metavar="app")
+    p.add_argument("--verbose", "-v", action="store_true", help=msg.HELP_INSTALL_VERBOSE)
+    p.add_argument("--yes", "-y", action="store_true", help=msg.HELP_INSTALL_YES)
 
     p = add(
         "download", help=msg.HELP_DOWNLOAD, description=msg.HELP_DOWNLOAD_DESC
@@ -189,12 +195,17 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argument
     p = add(
         "uninstall", help=msg.HELP_UNINSTALL, description=msg.HELP_UNINSTALL_DESC
     )
-    p.add_argument("apps", nargs="+", metavar="app")
+    p.add_argument("apps", nargs="*", metavar="app")
     p.add_argument("--purge", action="store_true", help=msg.HELP_UNINSTALL_PURGE)
+    p.add_argument("--all", action="store_true", help=msg.HELP_UNINSTALL_ALL)
+    p.add_argument("--verbose", "-v", action="store_true", help=msg.HELP_UNINSTALL_VERBOSE)
+    p.add_argument("--yes", "-y", action="store_true", help=msg.HELP_UNINSTALL_YES)
 
     p = add("update", help=msg.HELP_UPDATE, description=msg.HELP_UPDATE_DESC)
     p.add_argument("apps", nargs="*", metavar="app", help=msg.HELP_UPDATE_APPS)
     p.add_argument("--all", action="store_true", help=msg.HELP_UPDATE_ALL)
+    p.add_argument("--verbose", "-v", action="store_true", help=msg.HELP_UPDATE_VERBOSE)
+    p.add_argument("--yes", "-y", action="store_true", help=msg.HELP_UPDATE_YES)
 
     add("status", help=msg.HELP_STATUS)
 
@@ -252,7 +263,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(_expand_argv(raw))
     if not args.command:
         parser.print_help()
-        _print_alias_help()
+        _print_help_notes()
         return 0
     try:
         return dispatch(args, parser, parsers)
@@ -270,16 +281,26 @@ def dispatch(
     parsers: dict[str, argparse.ArgumentParser],
 ) -> int:
     command = args.command
+    # 明细行开关：仅 install / uninstall / update 支持 --verbose。
+    console.verbose = bool(getattr(args, "verbose", False))
 
     if command == "install":
-        return install.install_apps(args.apps)
+        return install.install_apps(args.apps, assume_yes=args.yes)
     if command == "download":
         return install.download_apps(args.apps)
     if command == "uninstall":
-        return uninstall.uninstall_apps(args.apps, purge=args.purge)
+        _reject_all_and_positional(parser, args.all, args.apps, "app")
+        if args.all:
+            apps = [item.app for item in installed.installed_apps()]
+            if not apps:
+                console.info(msg.MSG_NO_INSTALLED)
+                return 0
+        else:
+            apps = args.apps
+        return uninstall.uninstall_apps(apps, purge=args.purge, assume_yes=args.yes)
     if command == "update":
         _reject_all_and_positional(parser, args.all, args.apps, "app")
-        return _update(args.apps, all_apps=args.all)
+        return _update(args.apps, all_apps=args.all, assume_yes=args.yes)
     if command == "status":
         return query.status()
     if command == "list":
@@ -308,11 +329,11 @@ def dispatch(
             return 1
         else:
             parser.print_help()
-            _print_alias_help()
+            _print_help_notes()
         return 0
 
     parser.print_help()
-    _print_alias_help()
+    _print_help_notes()
     return 1
 
 
@@ -329,7 +350,7 @@ def _set_hold(apps: list[str], hold: bool) -> int:
     return 0
 
 
-def _update(targets: list[str], all_apps: bool = False) -> int:
+def _update(targets: list[str], all_apps: bool = False, assume_yes: bool = False) -> int:
     if not all_apps and not targets:
         failures = buckets.update_buckets()
         if failures:
@@ -341,9 +362,9 @@ def _update(targets: list[str], all_apps: bool = False) -> int:
         bucket_failures = buckets.update_buckets()
         if bucket_failures:
             console.warn(msg.MSG_BUCKET_PARTIAL_FAILED)
-        result = install.update_apps([])
+        result = install.update_apps([], assume_yes=assume_yes)
         return 1 if bucket_failures else result
-    return install.update_apps(targets)
+    return install.update_apps(targets, assume_yes=assume_yes)
 
 
 def _bucket(args: argparse.Namespace) -> int:

@@ -21,27 +21,37 @@ set "SYSPY=py -3"
 goto have_python
 
 :no_python
-echo [apm] Python 3.11 or newer was not found in PATH.
+echo Python 3.11 or newer was not found in PATH.
 exit /b 1
 
 :have_python
 if not exist "%PY%" (
-    echo [apm] Creating virtual environment .venv ...
+    echo Creating virtual environment .venv ...
     %SYSPY% -m venv "%VENV%"
     if errorlevel 1 (
-        echo [apm] Failed to create the virtual environment.
+        echo Failed to create the virtual environment.
         exit /b 1
     )
 )
 
-echo [apm] Installing dependencies ...
+echo Installing dependencies ...
 "%PY%" -m pip install --upgrade pip
 if errorlevel 1 exit /b 1
 "%PY%" -m pip install -r "%~dp0requirements.txt"
 if errorlevel 1 exit /b 1
 
+if not exist "%~dp0apm.exe" (
+    echo Restoring shims\apm.exe ...
+    copy /y "%ROOT%\apps\apm\supporting\shims\kiennq\shim.exe" "%~dp0apm.exe" >nul
+    if errorlevel 1 exit /b 1
+)
+> "%~dp0apm.shim" (
+    echo path = "%PY%"
+    echo args = -X utf8 "%ROOT%\apps\apm\code\__main__.py"
+)
+
 echo.
-echo [apm] Setup complete.
-echo [apm] Add this directory to your user PATH:
+echo Setup complete.
+echo Add this directory to your user PATH:
 echo        %~dp0
 exit /b 0

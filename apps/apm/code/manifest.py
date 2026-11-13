@@ -1,4 +1,4 @@
-"""Scoop manifest loading and field resolution."""
+"""Manifest loading and field resolution."""
 
 from __future__ import annotations
 
@@ -167,6 +167,24 @@ def manifest_dependencies(
                 msg.ERR_DEPENDENCY_FORMAT.format(item=item, error=exc)
             ) from exc
     return result
+
+
+def split_spec_raw(spec: str) -> tuple[str | None, str, str | None]:
+    """通配符 spec 的分段：不清洗字符，保留 * ? [ 等通配符。
+
+    返回 ``(bucket, app, version)``；与 parse_app_spec 的分段规则一致，
+    但不执行 sanitary_name，因此通配符不会被剥掉。
+    """
+    raw = spec.strip().replace("\\", "/")
+    version: str | None = None
+    if "@" in raw:
+        raw, version = raw.rsplit("@", 1)
+    bucket: str | None = None
+    app = raw
+    if "/" in raw:
+        bucket, app = raw.split("/", 1)
+        bucket = bucket or None
+    return bucket, app, version
 
 
 def parse_app_spec(spec: str) -> tuple[str | None, str, str | None]:
@@ -372,7 +390,7 @@ def license_text(value: Any) -> str:
 def remote_filename(url: str) -> str:
     parsed = urlparse(url)
     fragment = unquote(parsed.fragment)
-    # Scoop 约定：fragment 以 / 开头时表示保存文件名，例如
+    # 清单约定：fragment 以 / 开头时表示保存文件名，例如
     # https://curl.se/ca/cacert-2026-11-05.pem#/cacert.pem
     if fragment.startswith("/"):
         renamed = Path(fragment.lstrip("/")).name

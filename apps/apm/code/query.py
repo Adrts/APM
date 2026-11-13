@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from fnmatch import fnmatch
 from pathlib import Path
 
 from . import buckets, installed
@@ -11,7 +12,7 @@ from . import manifest, messages as msg, paths
 from .errors import ApmError
 from .manifest import AppRef
 from .output import console
-from .util import display_width, pad_text, remove_path
+from .util import display_width, has_wildcard, pad_text, remove_path
 
 INFO_LABEL_WIDTH = 8
 
@@ -22,11 +23,18 @@ def _field(label: str, value: object) -> str:
     return f"{label}{' ' * padding}{value}"
 
 
+def _name_match(name: str, query: str) -> bool:
+    """通配符参数按 glob 匹配，普通参数按子串匹配（均不区分大小写）。"""
+    lowered = query.lower()
+    if has_wildcard(query):
+        return fnmatch(name.lower(), lowered)
+    return lowered in name.lower()
+
+
 def list_installed(query: str | None = None) -> int:
     apps = installed.installed_apps()
     if query:
-        lowered = query.lower()
-        apps = [item for item in apps if lowered in item.app.lower()]
+        apps = [item for item in apps if _name_match(item.app, query)]
     if not apps:
         if query:
             console.info(msg.MSG_NO_MATCH_INSTALLED)
@@ -52,7 +60,6 @@ def list_installed(query: str | None = None) -> int:
 
 
 def search(query: str) -> int:
-    lowered = query.lower()
     rows: list[tuple[str, str, str]] = []
     for bucket, app, path in buckets.iter_manifests():
         try:
@@ -67,7 +74,7 @@ def search(query: str) -> int:
                 haystack.append(item)
             elif isinstance(item, list) and item:
                 haystack.extend(str(part) for part in item)
-        if not any(lowered in value.lower() for value in haystack):
+        if not any(_name_match(value, query) for value in haystack):
             continue
         rows.append((bucket, app, str(data.get("version") or "")))
     if not rows:

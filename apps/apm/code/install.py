@@ -6,18 +6,22 @@ import hashlib
 import os
 import shutil
 from dataclasses import dataclass, field
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
-from . import cache, config as config_module, deps, download, env, extract, installed
-from . import manifest, messages as msg, paths, ps, shortcuts
+from . import buckets, cache, config as config_module, deps, download, env, extract, installed
+from . import manifest, messages as msg, output, paths, ps, shortcuts
 from .errors import ApmError, InstallError
 from .manifest import AppRef
-from .output import console
+from .output import Bar, console
 from .util import (
     create_hardlink,
     create_junction,
+    dir_size,
     ensure_dir,
+    has_wildcard,
+    human_size,
     lp,
     now_iso,
     path_is_within,
@@ -41,25 +45,57 @@ class Materialized:
     copied: dict[str, Path]
 
 
+def _expand_specs(specs: list[str]) -> list[str]:
+    """把含通配符的 app 参数展开为清单中的具体应用名（大小写不敏感）。"""
+    expanded: list[str] = []
+    for spec in specs:
+        bucket, app, version = manifest.split_spec_raw(spec)
+        if not has_wildcard(app):
+            expanded.append(spec)
+            continue
+        matches = sorted(
+            {
+                matched
+                for matched_bucket, matched, _ in buckets.iter_manifests()
+                if (bucket is None or matched_bucket == bucket)
+                and fnmatch(matched.lower(), app.lower())
+            }
+        )
+        if not matches:
+            raise ApmError(msg.MSG_NO_MATCH_SEARCH.format(query=app))
+        for matched in matches:
+            expanded.append(
+                f"{bucket}/{matched}" if bucket else f"{matched}{f'@{version}' if version else ''}"
+            )
+    return expanded
+
+
 def install_apps(
     specs: list[str],
     for_update: bool = False,
     download_only: bool = False,
+    assume_yes: bool = False,
 ) -> int:
+    specs = _expand_specs(specs)
     for spec in specs:
         if manifest.parse_app_spec(spec)[1].lower() == "apm":
             raise ApmError(msg.MSG_APM_RESERVED)
-    refs = deps.resolve(specs, for_update=for_update or download_only)
+    refs, roots = deps.resolve(specs, for_update=for_update or download_only)
     if not refs:
         console.info(msg.MSG_NOTHING_TO_PROCESS)
         return 0
-
-    console.info(msg.MSG_PLAN.format(apps=" -> ".join(ref.app for ref in refs)))
     cfg = config_module.load()
     items = download.build_items(refs)
     if not items:
         console.info(msg.MSG_NOTHING_TO_DOWNLOAD)
         return 0
+
+    _print_transaction_table(refs, roots)
+    console.plain(msg.SECTION_DOWNLOAD)
+    if not download_only and not assume_yes:
+        if not console.confirm(msg.MSG_CONFIRM):
+            console.info(msg.MSG_CANCELED)
+            return 1
     results = download.download_all(items, cfg)
     failures = [result for result in results if not result.ok]
     if failures:
@@ -75,25 +111,96 @@ def install_apps(
     if download_only:
         for result in results:
             console.plain(str(result.item.path))
-        console.success(msg.MSG_DOWNLOAD_VERIFIED)
+        console.success(msg.MSG_COMPLETE)
         return 0
 
     by_path = {result.item.path: result for result in results}
-    for ref in refs:
+    console.plain(msg.SECTION_TRANSACTION)
+    done: list[tuple[str, str]] = []
+    total = len(refs)
+    for index, ref in enumerate(refs, 1):
+        old = installed.installed_version(ref.app)
+        if ref.app in roots and old and old != ref.version:
+            text = msg.MSG_UPDATE_APP.format(
+                app=ref.app, old=old, new=ref.version
+            )
+        else:
+            text = msg.MSG_STEP_INSTALL.format(app=ref.app, version=ref.version)
+        step_text = msg.MSG_STEP.format(text=text, index=index, total=total)
+        bar = console.bar_start(step_text, Bar.STYLE_STEP)
+        if bar is None:
+            console.info(step_text)
         try:
-            _install_one(ref, cfg, by_path)
+            result = _install_one(ref, cfg, by_path)
         except ApmError as exc:
+            console.bar_finish(bar, ok=False)
             console.failure_list([msg.ERR_ITEM.format(name=ref.app, error=exc)])
             return 1
         except Exception as exc:  # noqa: BLE001
+            console.bar_finish(bar, ok=False)
             console.failure_list([msg.ERR_ITEM.format(name=ref.app, error=exc)])
             return 1
+        size_text = None
+        if result:
+            size_text = human_size(
+                dir_size(paths.version_dir(ref.app, ref.version))
+            )
+            done.append(result)
+        console.bar_finish(bar, ok=True, size_text=size_text)
 
-    console.success(msg.MSG_ALL_INSTALLED)
+    console.plain()
+    console.plain(msg.LIST_INSTALLED_TITLE)
+    for app, version in done:
+        console.plain(f"  {app} {version}")
+    console.success(msg.MSG_COMPLETE)
     return 0
 
 
-def update_apps(targets: list[str]) -> int:
+def _print_transaction_table(refs: list[AppRef], roots: set[str]) -> None:
+    """打印事务表：安装/更新/安装依赖分节 + 事务摘要。"""
+    columns = [
+        (msg.TABLE_APP, "left"),
+        (msg.TABLE_VERSION, "left"),
+        (msg.TABLE_SOURCE, "left"),
+    ]
+    install_rows: list[tuple[str, ...]] = []
+    update_rows: list[tuple[str, ...]] = []
+    dep_rows: list[tuple[str, ...]] = []
+    for ref in refs:
+        row = (ref.app, ref.version, ref.bucket or msg.DASH)
+        old = installed.installed_version(ref.app)
+        if ref.app not in roots:
+            dep_rows.append(row)
+        elif old and old != ref.version:
+            update_rows.append(
+                (ref.app, f"{old} -> {ref.version}", ref.bucket or msg.DASH)
+            )
+        else:
+            install_rows.append(row)
+    sections = [
+        (msg.SECTION_INSTALL, install_rows, output.COLOR_INSTALL),
+        (msg.SECTION_UPDATE, update_rows, output.COLOR_INSTALL),
+        (msg.SECTION_INSTALL_DEPS, dep_rows, output.COLOR_INSTALL),
+    ]
+    console.transaction_table(columns, sections)
+    summary = []
+    if install_rows or dep_rows:
+        # 安装计数含依赖。
+        summary.append(
+            msg.MSG_TRANS_SUMMARY_INSTALL.format(
+                count=len(install_rows) + len(dep_rows)
+            )
+        )
+    if update_rows:
+        summary.append(msg.MSG_TRANS_SUMMARY_UPDATE.format(count=len(update_rows)))
+    if summary:
+        console.plain(msg.TRANSACTION_SUMMARY_TITLE)
+        for line in summary:
+            console.plain(line)
+        console.plain()
+
+
+def update_apps(targets: list[str], assume_yes: bool = False) -> int:
     installed_apps = {item.app: item for item in installed.installed_apps()}
     if not installed_apps:
         console.info(msg.MSG_NO_INSTALLED)
@@ -129,18 +236,13 @@ def update_apps(targets: list[str]) -> int:
                 msg.MSG_APP_LATEST.format(app=item.app, version=item.version)
             )
             continue
-        console.info(
-            msg.MSG_UPDATE_APP.format(
-                app=item.app, old=item.version, new=ref.version
-            )
-        )
         specs.append(f"{ref.bucket}/{item.app}")
     if not specs:
         if errors:
             return 1
         console.success(msg.MSG_ALL_LATEST)
         return 0
-    result = install_apps(specs, for_update=True)
+    result = install_apps(specs, for_update=True, assume_yes=assume_yes)
     return 1 if errors else result
 
 
@@ -152,14 +254,14 @@ def _install_one(
     ref: AppRef,
     cfg: dict[str, Any],
     results_by_path: dict[Path, download.DownloadResult],
-) -> None:
+) -> tuple[str, str] | None:
     app = ref.app
     version = ref.version
     if app.lower() == "apm":
         raise InstallError(msg.MSG_APM_RESERVED)
     if installed.is_installed(app) and installed.installed_version(app) == version:
         console.info(msg.MSG_APP_INSTALLED_SKIP.format(app=app, version=version))
-        return
+        return None
 
     app_root = paths.app_dir(app)
     version_path = paths.version_dir(app, version)
@@ -195,7 +297,7 @@ def _install_one(
 
         _run_installer(ref, version_path, materialized)
 
-        console.info(msg.MSG_SWITCH_CURRENT.format(version=version))
+        console.detail(msg.MSG_SWITCH_CURRENT.format(version=version))
         _switch_current(current, version_path)
         switched = True
 
@@ -222,7 +324,7 @@ def _install_one(
         _prune_old_versions(old_versions)
         _write_meta(ref, artifacts, old_meta)
         _show_notes(ref, current, version_path, persist_dir)
-        console.success(msg.MSG_INSTALLED.format(app=app, version=version))
+        return app, version
     except Exception as exc:
         if switched:
             try:
@@ -298,7 +400,7 @@ def _materialize(
                 )
             else:
                 extract_dir = extract_values[0] if extract_values else None
-            console.info(msg.MSG_EXTRACTING.format(file=name))
+            console.detail(msg.MSG_EXTRACTING.format(file=name))
             extract.extract_package(archive, version_path, extract_dir, innosetup, cfg)
             extracted_index += 1
         else:
@@ -315,7 +417,7 @@ def _run_installer(ref: AppRef, version_path: Path, materialized: Materialized) 
     if not installer:
         return
     persist_dir = paths.persist_app_dir(ref.app)
-    # 可执行分支：仅当 file 或 args 存在时执行（对齐 Scoop Invoke-Installer）。
+    # 可执行分支：仅当 file 或 args 存在时执行。
     if installer.get("file") or installer.get("args"):
         file_name = installer.get("file")
         if not file_name:
@@ -340,7 +442,7 @@ def _run_installer(ref: AppRef, version_path: Path, materialized: Materialized) 
                 "$global": "false",
             },
         )
-        console.info(msg.MSG_RUNNING_INSTALLER.format(file=file_name))
+        console.detail(msg.MSG_RUNNING_INSTALLER.format(file=file_name))
         ps.run_installer(
             executable,
             args,
@@ -360,7 +462,7 @@ def _run_installer(ref: AppRef, version_path: Path, materialized: Materialized) 
         )
         if not installer.get("keep") and file_name in materialized.copied:
             remove_path(materialized.copied[file_name])
-    # script 分支：无条件执行（对齐 Scoop Invoke-HookScript）。
+    # script 分支：无条件执行。
     script = installer.get("script")
     if script:
         ps.run_hook(
@@ -415,7 +517,7 @@ def _create_bin_entries(
         else:
             _write_wrapper(variants[0], resolved, args)
         artifacts.bin.append(wrapper_name)
-        console.info(msg.MSG_CREATING_SHIM.format(name=wrapper_name))
+        console.detail(msg.MSG_CREATING_SHIM.format(name=wrapper_name))
 
 
 def _resolve_bin_target(current: Path, original_dir: Path, target: str) -> Path:
@@ -462,7 +564,7 @@ def _write_wrapper(path: Path, target: Path, fixed_args: str) -> None:
 
 
 def _write_native_shim(name: str, target: Path, fixed_args: str) -> None:
-    """复制 vendored shim.exe 并写 .shim 旁车文件（对齐 Scoop 的 shim 函数）。"""
+    """复制 vendored shim.exe 并写 .shim 旁车文件。"""
     if not paths.VENDORED_SHIM.is_file():
         raise InstallError(
             msg.ERR_SHIM_MISSING.format(path=paths.VENDORED_SHIM)
@@ -552,7 +654,7 @@ def _apply_env(
     if path_entries:
         env.add_path(path_entries)
         artifacts.env_add_path.extend(path_entries)
-        console.info(msg.MSG_ADD_PATH.format(entries="; ".join(path_entries)))
+        console.detail(msg.MSG_ADD_PATH.format(entries="; ".join(path_entries)))
 
     values = manifest.env_set_values(ref)
     if values:
@@ -571,7 +673,7 @@ def _apply_env(
         }
         env.set_variables(values)
         artifacts.env_set.extend(values.keys())
-        console.info(msg.MSG_SET_ENV.format(names=", ".join(values.keys())))
+        console.detail(msg.MSG_SET_ENV.format(names=", ".join(values.keys())))
 
 
 def _apply_persist(
@@ -603,7 +705,7 @@ def _apply_persist(
         else:
             create_hardlink(source, target)
         artifacts.persist.append([source_rel, target_rel])
-        console.info(msg.MSG_PERSISTING.format(source=source_rel))
+        console.detail(msg.MSG_PERSISTING.format(source=source_rel))
 
 
 def _prune_old_versions(old_versions: list[Path]) -> None:

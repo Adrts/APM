@@ -1,8 +1,8 @@
-"""Bucket repositories known to Scoop.
+"""Known bucket repositories.
 
-The list lives in apps/apm/buckets.json (kept in sync with Scoop's
-buckets.json) so `apm bucket add <name>` works without an explicit
-repository URL, and the list can be edited without touching code.
+The list lives in apps/apm/buckets.json so `apm bucket add <name>` works
+without an explicit repository URL, and the list can be edited without
+touching code.
 """
 
 import json

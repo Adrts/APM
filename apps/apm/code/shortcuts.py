@@ -60,7 +60,7 @@ def create(
         detail = (proc.stderr or proc.stdout or "").strip()
         console.warn(msg.ERR_SHORTCUT_FAILED.format(name=name, detail=detail))
         return False
-    console.info(msg.MSG_SHORTCUT_CREATED.format(name=name))
+    console.detail(msg.MSG_SHORTCUT_CREATED.format(name=name))
     return True
 
 

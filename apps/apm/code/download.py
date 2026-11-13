@@ -3,20 +3,20 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import threading
 import urllib.error
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import urldefrag, urlparse
 
 from . import cache, messages as msg, paths, tools, verify
 from .errors import DownloadError
 from .manifest import AppRef
-from .output import console
-from .util import ensure_dir, lp, remove_path
+from .output import Bar, console
+from .util import ensure_dir, human_size, lp, remove_path
 
 USER_AGENT = "APM/0.1"
 
@@ -118,59 +118,283 @@ def transport_url(url: str, config: dict[str, Any]) -> str:
     return url
 
 
+class _Interrupted(Exception):
+    """Ctrl+C 协作中断信号：worker 线程据此快速退出，不产生任何输出。"""
+
+
 def _request_url(url: str) -> str:
     return urldefrag(url)[0]
 
 
-def _progress_callback(label: str) -> Callable[[int, int], None]:
-    state = {"last": -1}
+class DownloadBackend:
+    """下载后端统一接口（对应 13.11 流程图的各下载分支封装）。
 
-    def callback(read: int, total: int) -> None:
-        if total <= 0:
-            return
-        percent = min(100, int(read * 100 / total))
-        if percent >= state["last"] + 10 or percent == 100:
-            state["last"] = percent
-            console.progress(f"{label} {percent:3d}%")
+    四个后端（python / curl / wget / aria2）的方法签名与传出完全一致：
 
-    return callback
+    - ``staging_path(dest)``：本次下载的工作路径（python/curl/wget 为
+      ``缓存名.download``，aria2 为正式缓存名本身）；
+    - ``run(url, work, cookie)``：把字节写入工作路径，失败抛出
+      ``DownloadError``，无返回值；Ctrl+C 中断时抛出 ``_Interrupted``；
+    - ``commit(work, dest)``：哈希校验通过后固化为正式缓存（重命名 /
+      清理 aria2 控制文件）；
+    - ``rollback(work, dest)``：失败清理本次产生的文件；
+    - ``progress()``：返回 ``(已完成字节, 总字节)``。不支持获取进度的
+      后端直接沿用基类空实现，恒为 ``(0, 0)``。
+
+    哈希校验、固化与失败清理的调用次序由 APM 统一执行，后端只负责
+    字节落盘与自身的临时文件策略。
+    """
+
+    name = ""
+
+    def __init__(self, config: dict[str, Any], stop: threading.Event) -> None:
+        self.config = config
+        self.stop = stop
+
+    def staging_path(self, dest: Path) -> Path:
+        raise NotImplementedError
+
+    def run(self, url: str, work: Path, cookie: str | None) -> None:
+        raise NotImplementedError
+
+    def commit(self, work: Path, dest: Path) -> None:
+        raise NotImplementedError
+
+    def rollback(self, work: Path, dest: Path) -> None:
+        raise NotImplementedError
+
+    def progress(self) -> tuple[int, int]:
+        # 不支持获取进度的后端恒为 (0, 0)。
+        return (0, 0)
 
 
-def _python_download(
-    url: str, dest: Path, cookie: str | None, progress: bool, label: str
-) -> None:
-    headers = {"User-Agent": USER_AGENT}
-    if cookie:
-        headers["Cookie"] = cookie
-    request = urllib.request.Request(_request_url(url), headers=headers)
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            total = int(response.headers.get("Content-Length") or 0)
-            callback = _progress_callback(label) if progress else None
-            read = 0
-            with open(lp(dest), "wb") as fh:
-                while True:
-                    chunk = response.read(256 * 1024)
-                    if not chunk:
-                        break
-                    fh.write(chunk)
-                    read += len(chunk)
-                    if callback:
-                        callback(read, total)
-            if callback:
-                console.progress(f"{label} 100%", final=True)
-    except urllib.error.HTTPError as exc:
-        raise DownloadError(msg.ERR_HTTP.format(code=exc.code, url=url)) from exc
-    except urllib.error.URLError as exc:
+class TempFileBackend(DownloadBackend):
+    """以 ``缓存名.download`` 为工作路径的后端家族（python / curl / wget）。"""
+
+    def staging_path(self, dest: Path) -> Path:
+        return dest.with_name(dest.name + ".download")
+
+    def run(self, url: str, work: Path, cookie: str | None) -> None:
+        raise NotImplementedError
+
+    def commit(self, work: Path, dest: Path) -> None:
+        os.replace(lp(work), lp(dest))
+
+    def rollback(self, work: Path, dest: Path) -> None:
+        remove_path(work)
+
+
+class PythonBackend(TempFileBackend):
+    """Python 标准库后端：唯一支持字节级进度回报的后端。"""
+
+    name = "python"
+    _done = 0
+    _total = 0
+
+    def run(self, url: str, work: Path, cookie: str | None) -> None:
+        if work.exists():
+            remove_path(work)
+        headers = {"User-Agent": USER_AGENT}
+        if cookie:
+            headers["Cookie"] = cookie
+        request = urllib.request.Request(_request_url(url), headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                self._done = 0
+                self._total = int(response.headers.get("Content-Length") or 0)
+                read = 0
+                with open(lp(work), "wb") as fh:
+                    while True:
+                        if self.stop.is_set():
+                            raise _Interrupted()
+                        chunk = response.read(256 * 1024)
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+                        read += len(chunk)
+                        self._done = read
+        except urllib.error.HTTPError as exc:
+            raise DownloadError(msg.ERR_HTTP.format(code=exc.code, url=url)) from exc
+        except urllib.error.URLError as exc:
+            raise DownloadError(
+                msg.ERR_NETWORK.format(reason=exc.reason, url=url)
+            ) from exc
+        except OSError as exc:
+            if self.stop.is_set():
+                raise _Interrupted() from exc
+            raise DownloadError(msg.ERR_WRITE_FAILED.format(error=exc)) from exc
+
+    def progress(self) -> tuple[int, int]:
+        return (self._done, self._total)
+
+
+class CurlBackend(TempFileBackend):
+    name = "curl"
+
+    def __init__(self, config: dict[str, Any], stop: threading.Event) -> None:
+        super().__init__(config, stop)
+        exe = tools.find_backend(self.name)
+        if not exe:
+            raise DownloadError(msg.ERR_CURL_MISSING)
+        self.exe = exe
+
+    def run(self, url: str, work: Path, cookie: str | None) -> None:
+        if work.exists():
+            remove_path(work)
+        cmd = [
+            str(self.exe),
+            "-L",
+            "--fail",
+            "--retry",
+            "0",
+            "--silent",
+            "--show-error",
+            "--output",
+            str(work),
+            "--connect-timeout",
+            "30",
+            "--user-agent",
+            USER_AGENT,
+        ]
+        if cookie:
+            cmd.extend(["--header", f"Cookie: {cookie}"])
+        cmd.append(_request_url(url))
+        _run_backend(cmd, url, self.name, self.stop)
+
+
+class WgetBackend(TempFileBackend):
+    name = "wget"
+
+    def __init__(self, config: dict[str, Any], stop: threading.Event) -> None:
+        super().__init__(config, stop)
+        exe = tools.find_backend(self.name)
+        if not exe:
+            raise DownloadError(msg.ERR_WGET_MISSING)
+        self.exe = exe
+
+    def run(self, url: str, work: Path, cookie: str | None) -> None:
+        if work.exists():
+            remove_path(work)
+        cmd = [
+            str(self.exe),
+            "--no-verbose",
+            "--output-document",
+            str(work),
+            "--timeout=60",
+            "--tries=1",
+            f"--user-agent={USER_AGENT}",
+        ]
+        if cookie:
+            cmd.append(f"--header=Cookie: {cookie}")
+        cmd.append(_request_url(url))
+        _run_backend(cmd, url, self.name, self.stop)
+
+
+class Aria2Backend(DownloadBackend):
+    name = "aria2"
+
+    def __init__(self, config: dict[str, Any], stop: threading.Event) -> None:
+        super().__init__(config, stop)
+        exe = tools.find_backend(self.name)
+        if not exe:
+            raise DownloadError(msg.ERR_ARIA2_MISSING)
+        self.exe = exe
+        self.segments = max(
+            1,
+            int(config.get("download", {}).get("concurrency", {}).get("segments", 5)),
+        )
+
+    def staging_path(self, dest: Path) -> Path:
+        # aria2 直接下载到正式缓存名，靠 .aria2 控制文件管理断点。
+        return dest
+
+    def run(self, url: str, work: Path, cookie: str | None) -> None:
+        if work.exists():
+            remove_path(work)
+        control = Path(str(work) + ".aria2")
+        if control.exists():
+            remove_path(control)
+        cmd = [
+            str(self.exe),
+            "--dir",
+            str(work.parent),
+            "--out",
+            work.name,
+            "--split",
+            str(self.segments),
+            "--max-connection-per-server",
+            str(self.segments),
+            "--allow-overwrite=true",
+            "--auto-file-renaming=false",
+            "--file-allocation=none",
+            "--max-tries=1",
+            "--console-log-level=warn",
+            "--summary-interval=0",
+            "--user-agent",
+            USER_AGENT,
+        ]
+        if cookie:
+            cmd.extend(["--header", f"Cookie: {cookie}"])
+        cmd.append(_request_url(url))
+        _run_backend(cmd, url, self.name, self.stop)
+
+    def commit(self, work: Path, dest: Path) -> None:
+        # work 即正式缓存名，仅需清理 aria2 控制文件。
+        control = Path(str(work) + ".aria2")
+        if control.exists():
+            remove_path(control)
+
+    def rollback(self, work: Path, dest: Path) -> None:
+        _purge(work)
+
+
+BACKEND_CLASSES: dict[str, type[DownloadBackend]] = {
+    "python": PythonBackend,
+    "curl": CurlBackend,
+    "wget": WgetBackend,
+    "aria2": Aria2Backend,
+}
+
+
+def _backend_name(config: dict[str, Any]) -> str:
+    return str(config.get("download", {}).get("backend", "python"))
+
+
+def _create_backend(config: dict[str, Any], stop: threading.Event) -> DownloadBackend:
+    cls = BACKEND_CLASSES.get(_backend_name(config))
+    if cls is None:
         raise DownloadError(
-            msg.ERR_NETWORK.format(reason=exc.reason, url=url)
-        ) from exc
-    except OSError as exc:
-        raise DownloadError(msg.ERR_WRITE_FAILED.format(error=exc)) from exc
+            msg.ERR_BACKEND_UNKNOWN.format(backend=_backend_name(config))
+        )
+    return cls(config, stop)
 
 
-def _run_backend(cmd: list[str], url: str, backend: str) -> None:
-    proc = tools.run_tool(cmd)
+def _run_backend(
+    cmd: list[str], url: str, backend: str, stop: threading.Event
+) -> None:
+    """运行外部下载器：轮询等待以便 Ctrl+C 时立即终止子进程。"""
+    proc = subprocess.Popen(
+        [str(part) for part in cmd],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    while True:
+        if stop.is_set():
+            proc.kill()
+            try:
+                proc.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+            raise _Interrupted()
+        try:
+            proc.communicate(timeout=0.2)
+            break
+        except subprocess.TimeoutExpired:
+            continue
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()
         lowered = detail.lower()
@@ -185,103 +409,42 @@ def _run_backend(cmd: list[str], url: str, backend: str) -> None:
         )
 
 
-def _curl_download(url: str, dest: Path, cookie: str | None, curl: Path) -> None:
-    cmd = [
-        str(curl),
-        "-L",
-        "--fail",
-        "--retry",
-        "0",
-        "--silent",
-        "--show-error",
-        "--output",
-        str(dest),
-        "--connect-timeout",
-        "30",
-        "--user-agent",
-        USER_AGENT,
-    ]
-    if cookie:
-        cmd.extend(["--header", f"Cookie: {cookie}"])
-    cmd.append(_request_url(url))
-    _run_backend(cmd, url, "curl")
-
-
-def _wget_download(url: str, dest: Path, cookie: str | None, wget: Path) -> None:
-    cmd = [
-        str(wget),
-        "--no-verbose",
-        "--output-document",
-        str(dest),
-        "--timeout=60",
-        "--tries=1",
-        f"--user-agent={USER_AGENT}",
-    ]
-    if cookie:
-        cmd.append(f"--header=Cookie: {cookie}")
-    cmd.append(_request_url(url))
-    _run_backend(cmd, url, "wget")
-
-
-def _aria2_download(
-    url: str,
-    dest: Path,
-    cookie: str | None,
-    aria2: Path,
-    segments: int,
+def _poll_progress(
+    backend: DownloadBackend, bar: Bar | None, stop: threading.Event
 ) -> None:
-    ensure_dir(dest.parent)
-    if dest.exists():
-        remove_path(dest)
-    control = Path(str(dest) + ".aria2")
-    if control.exists():
-        remove_path(control)
-    cmd = [
-        str(aria2),
-        "--dir",
-        str(dest.parent),
-        "--out",
-        dest.name,
-        "--split",
-        str(max(1, segments)),
-        "--max-connection-per-server",
-        str(max(1, segments)),
-        "--allow-overwrite=true",
-        "--auto-file-renaming=false",
-        "--file-allocation=none",
-        "--max-tries=1",
-        "--console-log-level=warn",
-        "--summary-interval=0",
-        "--user-agent",
-        USER_AGENT,
-    ]
-    if cookie:
-        cmd.extend(["--header", f"Cookie: {cookie}"])
-    cmd.append(_request_url(url))
-    _run_backend(cmd, url, "aria2")
+    """统一进度轮询：定期读取 backend.progress() 推进进度条。
 
-
-def _backend_name(config: dict[str, Any]) -> str:
-    return str(config.get("download", {}).get("backend", "python"))
+    不支持获取进度的后端 progress() 恒为 (0, 0)，进度条保持弹跳动画。
+    """
+    while not stop.wait(0.2):
+        if bar is not None and bar.finished:
+            return
+        try:
+            done, total = backend.progress()
+        except Exception:  # noqa: BLE001 - 轮询失败不影响下载
+            return
+        if done or total:
+            console.bar_update(bar, done, total)
 
 
 def _download_one(
     item: DownloadItem,
     config: dict[str, Any],
-    progress: bool,
     cache_hit: bool,
+    index: int,
+    total: int,
+    stop: threading.Event,
 ) -> DownloadResult:
-    backend = _backend_name(config)
     cookie = _cookie_header(item.cookie)
-    label = msg.MSG_DOWNLOAD_PROGRESS_LABEL.format(
-        app=item.app, version=item.version, file=item.path.name
-    )
+    prefix = f"[{index}/{total}] "
     ensure_dir(item.path.parent)
-    tmp = item.path.with_name(item.path.name + ".download")
+    bar: Bar | None = None
+    backend: DownloadBackend | None = None
+    work: Path | None = None
 
     try:
         if cache_hit:
-            console.info(msg.MSG_USE_CACHE.format(file=item.path.name))
+            console.info(f"{prefix}{msg.MSG_USE_CACHE.format(file=item.path.name)}")
             ok, message = verify.verify_file(item.path, item.hash, config, item.app)
             if ok:
                 return DownloadResult(item=item, ok=True)
@@ -295,63 +458,59 @@ def _download_one(
         transport = transport_url(item.url, config)
         if transport != item.url:
             console.info(
-                msg.MSG_DOWNLOAD_MIRROR.format(file=item.path.name)
+                f"{prefix}{msg.MSG_DOWNLOAD_MIRROR.format(file=item.path.name)}"
             )
-        else:
-            console.info(msg.MSG_DOWNLOAD.format(file=item.path.name))
+        elif not console.tty:
+            # TTY 下由进度条展示下载过程，不再输出普通状态行。
+            console.info(f"{prefix}{msg.MSG_DOWNLOAD.format(file=item.path.name)}")
 
-        if backend == "python":
-            if tmp.exists():
-                remove_path(tmp)
-            _python_download(transport, tmp, cookie, progress, label)
-            target = tmp
-        elif backend == "curl":
-            curl = tools.find_backend("curl")
-            if not curl:
-                raise DownloadError(msg.ERR_CURL_MISSING)
-            if tmp.exists():
-                remove_path(tmp)
-            _curl_download(transport, tmp, cookie, curl)
-            target = tmp
-        elif backend == "wget":
-            wget = tools.find_backend("wget")
-            if not wget:
-                raise DownloadError(msg.ERR_WGET_MISSING)
-            if tmp.exists():
-                remove_path(tmp)
-            _wget_download(transport, tmp, cookie, wget)
-            target = tmp
-        elif backend == "aria2":
-            aria2 = tools.find_backend("aria2")
-            if not aria2:
-                raise DownloadError(msg.ERR_ARIA2_MISSING)
-            segments = int(
-                config.get("download", {}).get("concurrency", {}).get("segments", 5)
-            )
-            _aria2_download(transport, item.path, cookie, aria2, segments)
-            target = item.path
-        else:
-            raise DownloadError(
-                msg.ERR_BACKEND_UNKNOWN.format(backend=backend)
-            )
+        # 统一后端流程：staging_path → run → 校验 → commit（失败 rollback）。
+        backend = _create_backend(config, stop)
+        work = backend.staging_path(item.path)
+        # 进度条覆盖下载与校验全程；python 后端经 progress() 实时推进，
+        # 其余后端 progress() 恒为 (0, 0)，进度条保持弹跳动画模拟。
+        bar = console.bar_start(f"{prefix}{item.path.name}", Bar.STYLE_DOWNLOAD)
+        poller = threading.Thread(
+            target=_poll_progress, args=(backend, bar, stop), daemon=True
+        )
+        poller.start()
+        try:
+            backend.run(transport, work, cookie)
+        finally:
+            # 轮询线程在条定格后自行退出（见 _poll_progress）。
+            poller.join(timeout=0.5)
 
-        ok, message = verify.verify_file(target, item.hash, config, item.app)
+        ok, message = verify.verify_file(work, item.hash, config, item.app)
         if not ok:
-            _purge(item.path if target == item.path else tmp)
+            backend.rollback(work, item.path)
             return DownloadResult(
                 item=item, ok=False, error=message or msg.ERR_VERIFY_FAILED
             )
+        backend.commit(work, item.path)
 
-        if target == tmp:
-            os.replace(lp(tmp), lp(item.path))
-        else:
-            control = Path(str(item.path) + ".aria2")
-            if control.exists():
-                remove_path(control)
-        console.success(msg.MSG_DOWNLOADED.format(file=item.path.name))
+        size_text = human_size(item.path.stat().st_size)
+        if bar is None:
+            console.success(
+                f"{prefix}{msg.MSG_DOWNLOADED.format(file=item.path.name)}"
+            )
+        console.bar_finish(bar, ok=True, size_text=size_text)
         return DownloadResult(item=item, ok=True)
+    except _Interrupted:
+        # Ctrl+C：静默退出，进度条块由取消路径统一擦除。
+        _purge(item.path)
+        return DownloadResult(item=item, ok=False, error=None)
     except Exception as exc:  # noqa: BLE001 - failures are reported per item
-        _purge(tmp if tmp.exists() else item.path)
+        if stop.is_set():
+            _purge(item.path)
+            return DownloadResult(item=item, ok=False, error=None)
+        console.bar_finish(bar, ok=False)
+        if backend is not None and work is not None:
+            try:
+                backend.rollback(work, item.path)
+            except Exception:  # noqa: BLE001 - 清理失败不影响失败上报
+                pass
+        else:
+            _purge(item.path)
         return DownloadResult(item=item, ok=False, error=str(exc))
 
 
@@ -367,29 +526,47 @@ def download_all(items: list[DownloadItem], config: dict[str, Any]) -> list[Down
     if not items:
         return []
     ensure_dir(paths.CACHE_DIR)
-    concurrency = int(
-        config.get("download", {}).get("concurrency", {}).get("apps", 3)
+    concurrency = max(
+        1,
+        int(config.get("download", {}).get("concurrency", {}).get("apps", 3)),
     )
-    concurrency = max(1, concurrency)
-    progress = concurrency == 1 and console.tty
-    results: dict[int, DownloadResult] = {}
-    with ThreadPoolExecutor(max_workers=concurrency) as executor:
-        futures = {
-            executor.submit(
-                _download_one,
-                item,
-                config,
-                progress,
-                item.path.exists(),
-            ): index
-            for index, item in enumerate(items)
-        }
-        for future in as_completed(futures):
-            index = futures[future]
-            try:
-                results[index] = future.result()
-            except Exception as exc:  # noqa: BLE001
-                results[index] = DownloadResult(
-                    item=items[index], ok=False, error=str(exc)
-                )
-    return [results[index] for index in range(len(items))]
+    # Ctrl+C 协作中断：worker 下载循环与外部子进程轮询均检查 stop 事件。
+    # 下载线程全部 daemon 化——主线程的 join 被 ^C 打断后不再等待任何
+    # worker（可能阻塞在连接阶段，最长 60s 超时），进程立即结束，残留的
+    # .download 临时文件由下次下载开头的清理逻辑回收。
+    stop = threading.Event()
+    semaphore = threading.Semaphore(concurrency)
+    results: list[DownloadResult | None] = [None] * len(items)
+
+    def worker(index: int) -> None:
+        while not stop.is_set():
+            if semaphore.acquire(timeout=0.2):
+                try:
+                    results[index] = _download_one(
+                        items[index],
+                        config,
+                        items[index].path.exists(),
+                        index + 1,
+                        len(items),
+                        stop,
+                    )
+                finally:
+                    semaphore.release()
+                return
+        results[index] = DownloadResult(item=items[index], ok=False, error=None)
+
+    threads = [
+        threading.Thread(target=worker, args=(index,), daemon=True)
+        for index in range(len(items))
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        for thread in threads:
+            thread.join()
+    except KeyboardInterrupt:
+        stop.set()
+        raise
+    finally:
+        console.bars_close(erase=stop.is_set())
+    return list(results)

@@ -8,9 +8,11 @@ from .manifest import AppRef
 from .output import console
 
 
-def resolve(specs: list[str], for_update: bool = False) -> list[AppRef]:
+def resolve(specs: list[str], for_update: bool = False) -> tuple[list[AppRef], set[str]]:
+    """解析依赖，后序返回 refs；同时返回用户显式指定的根应用名集合。"""
     parsed = [manifest.parse_app_spec(spec) for spec in specs]
     refs: list[AppRef] = []
+    roots: set[str] = set()
     seen: set[str] = set()
     versions: dict[str, str] = {}
     visiting: list[str] = []
@@ -61,9 +63,11 @@ def resolve(specs: list[str], for_update: bool = False) -> list[AppRef]:
             refs.append(ref)
             seen.add(app)
             versions[app] = ref.version
+            if is_root:
+                roots.add(app)
         finally:
             visiting.pop()
 
     for bucket, app, version in parsed:
         visit(bucket, app, version, True)
-    return refs
+    return refs, roots

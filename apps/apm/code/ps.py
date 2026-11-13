@@ -26,7 +26,7 @@ def _quote(value: Any) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
-# 注入到所有内联 PowerShell 脚本的 Scoop 同名 helper（Add-Path / Remove-Path）。
+# 注入到所有内联 PowerShell 脚本的同名 helper（Add-Path / Remove-Path）。
 # 语义对齐 design.md 11.3：只写 HKCU\Environment\Path，保留原值类型，
 # 去重规则忽略大小写、首尾引号与末尾反斜杠，新增前置，写回后广播 WM_SETTINGCHANGE。
 HELPER_FUNCTIONS = r"""
@@ -226,7 +226,7 @@ def run_hook(
         body,
     ]
     hook_name = msg.HOOK_NAMES.get(hook_type, hook_type)
-    console.info(msg.MSG_HOOK_RUNNING.format(hook=hook_name))
+    console.detail(msg.MSG_HOOK_RUNNING.format(hook=hook_name))
     proc = run_script("\r\n".join(prelude), cwd=original_dir)
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()

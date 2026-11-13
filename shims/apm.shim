@@ -1,0 +1,2 @@
+path = "D:\Workspace\APM\.venv\Scripts\python.exe"
+args = -X utf8 "D:\Workspace\APM\apps\apm\code\__main__.py"

@@ -3,26 +3,125 @@
 from __future__ import annotations
 
 import os
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
-from . import env, installed, manifest, messages as msg, paths, ps, shortcuts
+from . import env, installed, manifest, messages as msg, output, paths, ps, shortcuts
 from .errors import ApmError, UninstallError
 from .manifest import AppRef
-from .output import console
-from .util import read_json, remove_path
+from .output import Bar, console
+from .util import dir_size, has_wildcard, human_size, read_json, remove_path
 
 
-def uninstall_apps(specs: list[str], purge: bool = False) -> int:
+def _expand_installed(specs: list[str]) -> tuple[list[str], list[str]]:
+    """把含通配符的 app 参数展开为已安装应用名；返回 (展开列表, 失败明细)。"""
+    expanded: list[str] = []
     failures: list[str] = []
     for spec in specs:
+        bucket, app, _version = manifest.split_spec_raw(spec)
+        if not has_wildcard(app):
+            expanded.append(manifest.parse_app_spec(spec)[1])
+            continue
+        matches = sorted(
+            item.app
+            for item in installed.installed_apps()
+            if fnmatch(item.app.lower(), app.lower())
+        )
+        if not matches:
+            failures.append(
+                msg.ERR_ITEM.format(
+                    name=app, error=msg.MSG_NO_MATCH_INSTALLED
+                )
+            )
+            continue
+        expanded.extend(matches)
+    return expanded, failures
+
+
+def uninstall_apps(
+    specs: list[str], purge: bool = False, assume_yes: bool = False
+) -> int:
+    specs, failures = _expand_installed(specs)
+    targets: list[tuple[str, str, str]] = []
+    for spec in specs:
         _, app, _ = manifest.parse_app_spec(spec)
-        try:
-            _uninstall_one(app, purge)
-        except ApmError as exc:
-            failures.append(msg.ERR_ITEM.format(name=app, error=exc))
-        except Exception as exc:  # noqa: BLE001
-            failures.append(msg.ERR_ITEM.format(name=app, error=exc))
+        if app.lower() == "apm":
+            failures.append(
+                msg.ERR_ITEM.format(name=app, error=msg.MSG_UNINSTALL_APM)
+            )
+            continue
+        if not installed.is_installed(app):
+            failures.append(
+                msg.ERR_ITEM.format(
+                    name=app, error=msg.MSG_APP_NOT_INSTALLED.format(app=app)
+                )
+            )
+            continue
+        meta = installed.read_meta(app) or {}
+        version = str(meta.get("version") or installed.installed_version(app) or "")
+        bucket = str(meta.get("bucket") or msg.DASH)
+        size = human_size(dir_size(paths.current_dir(app)))
+        targets.append((app, version or msg.DASH, bucket, size))
+
+    done: list[tuple[str, str]] = []
+    if targets:
+        console.transaction_table(
+            [
+                (msg.TABLE_APP, "left"),
+                (msg.TABLE_VERSION, "left"),
+                (msg.TABLE_SOURCE, "left"),
+                (msg.TABLE_SIZE, "right"),
+            ],
+            [
+                (
+                    msg.SECTION_UNINSTALL,
+                    [
+                        (app, version, bucket, size)
+                        for app, version, bucket, size in targets
+                    ],
+                    output.COLOR_REMOVE,
+                )
+            ],
+        )
+        console.plain(msg.TRANSACTION_SUMMARY_TITLE)
+        console.plain(
+            msg.MSG_TRANS_SUMMARY_UNINSTALL.format(count=len(targets))
+        )
+        if not assume_yes:
+            if not console.confirm(msg.MSG_CONFIRM):
+                console.info(msg.MSG_CANCELED)
+                return 1
+        console.plain(msg.SECTION_TRANSACTION)
+        total = len(targets)
+        for index, (app, version, _bucket, size) in enumerate(targets, 1):
+            step_text = msg.MSG_STEP.format(
+                text=msg.MSG_STEP_UNINSTALL.format(app=app, version=version),
+                index=index,
+                total=total,
+            )
+            bar = console.bar_start(step_text, Bar.STYLE_STEP)
+            if bar is None:
+                console.info(step_text)
+            try:
+                _uninstall_one(app, purge)
+            except ApmError as exc:
+                console.bar_finish(bar, ok=False)
+                failures.append(msg.ERR_ITEM.format(name=app, error=exc))
+            except Exception as exc:  # noqa: BLE001
+                console.bar_finish(bar, ok=False)
+                failures.append(msg.ERR_ITEM.format(name=app, error=exc))
+            else:
+                # 大小列即释放的空间量，定格在进度条上。
+                console.bar_finish(bar, ok=True, size_text=size)
+                done.append((app, version))
+        if done:
+            console.plain()
+            console.plain(msg.LIST_REMOVED_TITLE)
+            for app, _version in done:
+                console.plain(f"  {app}")
+            if not failures:
+                console.success(msg.MSG_COMPLETE)
     if failures:
         console.failure_list(failures)
         return 1
@@ -93,7 +192,7 @@ def _uninstall_one(app: str, purge: bool) -> None:
 
     uninstaller = manifest.uninstaller_of(ref)
     if uninstaller:
-        # 可执行分支：仅当 file 或 args 存在时执行（对齐 Scoop Invoke-Installer）。
+        # 可执行分支：仅当 file 或 args 存在时执行。
         if uninstaller.get("file") or uninstaller.get("args"):
             file_name = uninstaller.get("file") or (filenames[0] if filenames else "")
             if not file_name:
@@ -128,7 +227,7 @@ def _uninstall_one(app: str, purge: bool) -> None:
                     "cmd": "uninstall",
                 },
             )
-        # script 分支：无条件执行（对齐 Scoop Invoke-HookScript）。
+        # script 分支：无条件执行。
         script = uninstaller.get("script")
         if script:
             ps.run_hook("uninstaller", script, cmd="uninstall", **context)
@@ -150,9 +249,9 @@ def _uninstall_one(app: str, purge: bool) -> None:
 
     if purge:
         remove_path(paths.persist_app_dir(app))
-        console.info(msg.MSG_PERSIST_PURGED.format(app=app))
+        console.detail(msg.MSG_PERSIST_PURGED.format(app=app))
     else:
-        console.info(msg.MSG_PERSIST_KEPT.format(path=persist_dir))
+        console.detail(msg.MSG_PERSIST_KEPT.format(path=persist_dir))
 
     for file_path in (
         installed.meta_path(app),
@@ -166,7 +265,6 @@ def _uninstall_one(app: str, purge: bool) -> None:
             app_root.rmdir()
     except OSError:
         pass
-    console.success(msg.MSG_UNINSTALLED.format(app=app))
 
 
 def _remove_shortcuts(app: str, meta: dict[str, Any], ref: AppRef) -> None:
@@ -201,7 +299,7 @@ def _remove_bins(app: str, meta: dict[str, Any]) -> None:
         if existing:
             for variant in existing:
                 remove_path(variant)
-            console.info(msg.MSG_REMOVE_SHIM.format(name=name))
+            console.detail(msg.MSG_REMOVE_SHIM.format(name=name))
 
 
 def _remove_env(

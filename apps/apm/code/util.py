@@ -42,9 +42,14 @@ def ensure_dir(path: os.PathLike[str] | str) -> Path:
 
 
 def sanitary_name(value: str) -> str:
-    """Apply Scoop's sanitary_path rules to an app name."""
+    """清洗应用名：去除路径非法字符，去掉首尾空白与结尾的句点。"""
     cleaned = re.sub(r"[/\\?:*<>|]", "", value)
     return cleaned.strip().rstrip(". ") or cleaned
+
+
+def has_wildcard(text: str) -> bool:
+    """参数是否包含通配符字符（* ? [seq]）。"""
+    return any(char in text for char in "*?[")
 
 
 def is_reparse_dir(path: os.PathLike[str] | str) -> bool:
@@ -323,6 +328,27 @@ def human_size(size: float) -> str:
             return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
         value /= 1024
     return f"{value:.1f} TB"
+
+
+def dir_size(path: os.PathLike[str] | str) -> int:
+    """估算目录大小；目录不可达时返回 0。联接目录按链接处理，不重复计数。"""
+    total = 0
+    try:
+        real = Path(lp(path))
+        for root, dirs, files in os.walk(real):
+            dirs[:] = [
+                name
+                for name in dirs
+                if not is_reparse_dir(os.path.join(root, name))
+            ]
+            for name in files:
+                try:
+                    total += os.lstat(os.path.join(root, name)).st_size
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return total
 
 
 def terminal_columns() -> int:

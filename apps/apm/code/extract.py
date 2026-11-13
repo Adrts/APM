@@ -1,4 +1,4 @@
-"""Archive extraction, dispatched by file extension (Scoop compatible)."""
+"""Archive extraction, dispatched by file extension."""
 
 from __future__ import annotations
 
@@ -338,7 +338,7 @@ def _extract_inno(archive: Path, dest: Path, innounp: Path) -> None:
                 name=archive.name, code=proc.returncode, detail=detail
             )
         )
-    # Inno Setup 归档中的文件通常位于字面量 {app} 子目录，Scoop 会将其拍平。
+    # Inno Setup 归档中的文件通常位于字面量 {app} 子目录，需将其内容拍平到版本根目录。
     app_dir = dest / "{app}"
     if app_dir.is_dir():
         _merge_move(app_dir, dest)

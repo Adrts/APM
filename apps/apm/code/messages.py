@@ -18,7 +18,6 @@ import re
 
 # ---------------------------------------------------------------- 通用
 
-PREFIX = "[apm]"
 YES = "是"
 NO = "否"
 DASH = "-"
@@ -80,38 +79,70 @@ MSG_NO_BUCKETS = "尚未添加任何软件源，运行 apm bucket add main"
 MSG_ALL_LATEST = "所有应用均已是最新版本"
 MSG_INSTALLED_YES = "是（{version}）"
 
+# ---------------------------------------------------------------- 事务显示
+
+SECTION_INSTALL = "安装："
+SECTION_INSTALL_DEPS = "安装依赖："
+SECTION_UPDATE = "更新："
+SECTION_UNINSTALL = "卸载："
+SECTION_DOWNLOAD = "下载软件包："
+SECTION_TRANSACTION = "执行事务："
+TRANSACTION_SUMMARY_TITLE = "事务摘要："
+LIST_INSTALLED_TITLE = "已安装："
+LIST_REMOVED_TITLE = "已卸载："
+MSG_TRANS_SUMMARY_INSTALL = " 安装：{count} 个应用"
+MSG_TRANS_SUMMARY_UPDATE = " 更新：{count} 个应用"
+MSG_TRANS_SUMMARY_UNINSTALL = " 卸载：{count} 个应用"
+MSG_STEP = "[{index}/{total}] {text}"
+MSG_STEP_INSTALL = "安装 {app} {version}"
+MSG_STEP_UNINSTALL = "卸载 {app} {version}"
+MSG_COMPLETE = "完成！"
+MSG_CONFIRM = "是否继续执行事务？[y/N]"
+
 # ---------------------------------------------------------------- 别名帮助
 
-HELP_ALIAS_TITLE = "预定义短别名（不支持用户自定义）："
+HELP_ALIAS_TITLE = "预定义短别名："
 HELP_ALIAS_LINE_1 = (
     "  {in_} = {install}    {rm} = {remove} = {uninstall}    {se} = {search}"
 )
 HELP_ALIAS_LINE_2 = "  {up} = {update}    {ls} = {list}    {question} = {help_cmd}"
 HELP_PARAM_ALIAS_TITLE = "参数级别名："
 HELP_PARAM_ALIAS_LINE = "  除命令名外，独立参数 {star} 一律等价于 {all_flag}"
+HELP_OPTIONS_TITLE = "常用参数："
+HELP_OPTIONS_LINE = (
+    "  install / uninstall / update：-v 显示步骤明细    -y 跳过二次确认"
+)
+HELP_OPTIONS_LINE_2 = "  uninstall：--all 卸载全部    app 参数支持通配符（如 open*）"
 
 # ---------------------------------------------------------------- argparse
 
 HELP_USAGE_PREFIX = "用法："
 HELP_SECTION_POSITIONAL = "位置参数"
 HELP_SECTION_OPTIONS = "选项"
-HELP_ROOT_DESC = "APM - Adrts 包管理器（兼容 Scoop 软件源的 Windows 包管理器）"
+HELP_ROOT_DESC = "APM - Adrts 包管理器"
 HELP_OPTION_HELP = "显示帮助并退出"
 HELP_OPTION_VERSION = "显示版本号并退出"
 HELP_VERSION_TEXT = "apm {version}"
 ERR_ARG_PREFIX = "错误："
 
 HELP_INSTALL = "安装应用"
-HELP_INSTALL_DESC = "安装一个或多个应用及其依赖"
+HELP_INSTALL_DESC = "安装一个或多个应用及其依赖；app 支持通配符模糊匹配（如 open*）"
+HELP_INSTALL_VERBOSE = "显示步骤明细（解压、命令入口、快捷方式等）"
+HELP_INSTALL_YES = "跳过二次确认，直接执行"
 HELP_DOWNLOAD = "只下载并校验"
 HELP_DOWNLOAD_DESC = "执行安装流程的阶段一，不修改已安装内容"
 HELP_UNINSTALL = "卸载应用"
-HELP_UNINSTALL_DESC = "卸载一个或多个应用"
+HELP_UNINSTALL_DESC = "卸载一个或多个应用；app 支持通配符模糊匹配（如 open*），* 单独出现等价于 --all"
 HELP_UNINSTALL_PURGE = "同时删除持久化数据"
+HELP_UNINSTALL_VERBOSE = "显示步骤明细（移除命令入口、持久化处理等）"
+HELP_UNINSTALL_YES = "跳过二次确认，直接执行"
+HELP_UNINSTALL_ALL = "卸载全部已安装应用"
 HELP_UPDATE = "更新软件源或应用"
 HELP_UPDATE_DESC = "不带参数时刷新软件源索引"
 HELP_UPDATE_APPS = "应用名；--all 表示全部"
 HELP_UPDATE_ALL = "先刷新全部软件源索引，再更新全部应用，不能与 app 同时指定"
+HELP_UPDATE_VERBOSE = "显示步骤明细（解压、命令入口、快捷方式等）"
+HELP_UPDATE_YES = "跳过二次确认，直接执行"
 HELP_STATUS = "检查可更新版本"
 HELP_LIST = "列出已安装应用"
 HELP_LIST_QUERY = "名称过滤；--all 表示全部"
@@ -191,7 +222,6 @@ def argparse_error(message: str) -> str:
 
 # ---------------------------------------------------------------- 安装与更新
 
-MSG_PLAN = "计划顺序：{apps}"
 MSG_APP_LOCKED_SKIP = "{app} 已锁定，跳过"
 MSG_APP_LOCKED_CHECK = "{app} 已锁定，跳过检查"
 MSG_APP_INSTALLED_SKIP = "{app} {version} 已安装，跳过"
@@ -202,8 +232,6 @@ ERR_DEPENDENCY_CONFLICT = (
 MSG_APP_LATEST = "{app} 已是最新（{version}）"
 MSG_MANIFEST_UNREADABLE = "无法读取 {app} 的清单，跳过：{error}"
 MSG_UPDATE_APP = "更新 {app}：{old} -> {new}"
-MSG_INSTALLED = "已安装 {app} {version}"
-MSG_ALL_INSTALLED = "已全部安装完成"
 MSG_INSTALL_FAILED = "安装 {app} 失败：{error}"
 MSG_APM_RESERVED = "应用名 apm 为 APM 自身保留"
 MSG_APP_NOT_INSTALLED = "应用未安装：{app}"
@@ -218,7 +246,6 @@ MSG_SET_ENV = "写入环境变量：{names}"
 MSG_PERSISTING = "持久化 {source}"
 MSG_REMOVE_SHIM = "移除命令入口 {name}"
 MSG_OLD_VERSION_DELETE_FAILED = "旧版本目录删除失败（可能被占用）：{path}"
-MSG_UNINSTALLED = "已卸载 {app}"
 MSG_HOLD_SET = "已锁定 {app}"
 MSG_UNHOLD_SET = "已解除锁定 {app}"
 MSG_HOLD_ALREADY = "{app} 已处于锁定状态"
@@ -266,14 +293,12 @@ MSG_DOWNLOAD = "下载 {file}"
 MSG_DOWNLOAD_MIRROR = "下载 {file}（镜像）"
 MSG_USE_CACHE = "使用缓存 {file}"
 MSG_DOWNLOADED = "已下载 {file}"
-MSG_DOWNLOAD_PROGRESS_LABEL = "下载 {app} {version}（{file}）"
 MSG_CACHE_INVALID = "缓存校验失败，重新下载：{file}\n{detail}"
 MSG_MIRROR_NOT_CONFIGURED = (
     "未配置 {provider} 镜像前缀，按原始地址下载"
     "（可在 {config} 中设置 download.mirror.{provider}）"
 )
 MSG_DOWNLOAD_STAGE_FAILED = "下载阶段失败，已终止安装，未修改已安装内容"
-MSG_DOWNLOAD_VERIFIED = "下载与校验已完成"
 ERR_HTTP = "HTTP 错误 {code}：{url}"
 ERR_NETWORK = "网络错误：{reason}（{url}）"
 ERR_WRITE_FAILED = "写入失败：{error}"

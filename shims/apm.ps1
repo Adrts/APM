@@ -1,7 +1,7 @@
 $env:APM_ROOT = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $python = Join-Path $env:APM_ROOT '.venv\Scripts\python.exe'
 if (-not (Test-Path $python)) {
-    Write-Host '[apm] Virtual environment not found. Run shims\apm_setup.cmd first.'
+    Write-Host 'Virtual environment not found. Run shims\apm_setup.cmd first.'
     exit 1
 }
 $env:PYTHONUTF8 = '1'
