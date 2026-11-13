@@ -1,10 +1,15 @@
 .venv/
 apps/*
+!apps/此文件夹用来安装软件
 !apps/apm/
 buckets/*
+!buckets/此文件夹用来放软件源
 cache/*
+!cache/此文件夹用来放下载缓存
 persist/*
+!persist/此文件夹用来放软件配置
 shims/*
+!shims/此文件夹用来放软件入口
 !shims/apm.cmd
 !shims/apm.ps1
 !shims/apm.exe
@@ -13,7 +18,5 @@ shims/*
 !shims/requirements.txt
 __pycache__/
 *.py[cod]
-.ruff_cache/
-.screenshots/
 .*tmp*/
 .*temp*/
