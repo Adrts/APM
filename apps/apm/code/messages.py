@@ -291,6 +291,7 @@ MSG_CACHE_DELETE_FAILED = "删除失败（可能被占用）：{path}（{error}�
 
 MSG_DOWNLOAD = "下载 {file}"
 MSG_DOWNLOAD_MIRROR = "下载 {file}（镜像）"
+MIRROR_SUFFIX = "（镜像）"
 MSG_USE_CACHE = "使用缓存 {file}"
 MSG_DOWNLOADED = "已下载 {file}"
 MSG_CACHE_INVALID = "缓存校验失败，重新下载：{file}\n{detail}"

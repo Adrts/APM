@@ -145,8 +145,13 @@ def install_apps(
             size_text = human_size(
                 dir_size(paths.version_dir(ref.app, ref.version))
             )
-            done.append(result)
         console.bar_finish(bar, ok=True, size_text=size_text)
+        if result:
+            done.append((result[0], result[1]))
+            if result[2]:
+                console.heading(msg.NOTES_TITLE)
+                console.plain(result[2])
+                console.plain()
 
     console.plain()
     console.plain(msg.LIST_INSTALLED_TITLE)
@@ -323,8 +328,8 @@ def _install_one(
 
         _prune_old_versions(old_versions)
         _write_meta(ref, artifacts, old_meta)
-        _show_notes(ref, current, version_path, persist_dir)
-        return app, version
+        notes = _show_notes(ref, current, version_path, persist_dir)
+        return app, version, notes
     except Exception as exc:
         if switched:
             try:
@@ -741,11 +746,12 @@ def _write_meta(ref: AppRef, artifacts: Artifacts, old_meta: dict[str, Any]) -> 
 
 def _show_notes(
     ref: AppRef, current: Path, original_dir: Path, persist_dir: Path
-) -> None:
+) -> str | None:
+    """返回替换占位符后的备注文本；无备注返回 None（由步骤条定格后打印）。"""
     notes = manifest.notes_of(ref)
     if not notes:
-        return
-    notes = manifest.substitute(
+        return None
+    return manifest.substitute(
         notes,
         {
             "$dir": str(current),
@@ -753,6 +759,3 @@ def _show_notes(
             "$persist_dir": str(persist_dir),
         },
     )
-    console.heading(msg.NOTES_TITLE)
-    console.plain(notes)
-    console.plain()

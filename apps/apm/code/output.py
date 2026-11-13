@@ -98,6 +98,7 @@ class Bar:
         self.desc = desc
         self.style = style
         self.keep_on_finish = keep_on_finish
+        self.running = False
         self.begin = time.monotonic()
         self.end: float | None = None
         self.ok: bool | None = None
@@ -110,6 +111,12 @@ class Bar:
         self._last_time = self.begin
 
     # ------------------------------------------------------------ 状态
+
+    def run(self) -> None:
+        """开始计时（预分配的等待条在真正开始下载时调用）。"""
+        self.running = True
+        self.begin = time.monotonic()
+        self._last_time = self.begin
 
     def update(self, done: int, total: int) -> None:
         """推进字节进度（python 后端下载回调），计算瞬时速度的滑动均值。"""
@@ -144,9 +151,18 @@ class Bar:
     # ------------------------------------------------------------ 渲染
 
     def render(self, width: int) -> str:
+        desc_width = _bar_desc_width(width)
+        if not self.running:
+            # 预分配的等待条：静止占位，等待槽位或缓存检查。
+            desc = pad_text(fit_text(self.desc, desc_width), desc_width)
+            widgets = (
+                f"    {bar_widget(0.0, None)} "
+                f"{pad_text('--', BAR_SPEED_WIDTH, 'right')} | "
+                f"{pad_text('--', BAR_SIZE_WIDTH, 'right')} |         --"
+            )
+            return f"{desc} {widgets}"
         elapsed = self.elapsed()
         time_text = f"{int(elapsed) // 60:02d}m{int(elapsed) % 60:02d}s"
-        desc_width = _bar_desc_width(width)
         if self.style == Bar.STYLE_STEP:
             pct = 100 if (self.finished and self.ok) else None
             percent = f"{pct:3d}%" if pct is not None else "    "
@@ -305,11 +321,18 @@ class Console:
 
     # ------------------------------------------------------------ 进度条块
 
-    def bar_start(self, desc: str, style: str) -> Bar | None:
-        """开始一条进度条；非 TTY 或终端过窄时返回 None，回退为普通状态行。"""
+    def bar_start(
+        self, desc: str, style: str, running: bool = True
+    ) -> Bar | None:
+        """开始一条进度条；非 TTY 或终端过窄时返回 None，回退为普通状态行。
+
+        ``running=False`` 时先按位置预留条（静止占位，如按编号排队的下载项），
+        由 ``bar_run`` 在真正开始时启动计时。
+        """
         if not self.tty or terminal_columns() < BAR_MIN_TERMINAL:
             return None
         bar = Bar(desc, style, keep_on_finish=style == Bar.STYLE_DOWNLOAD)
+        bar.running = running
         with self._lock:
             self._bars.append(bar)
             if style == Bar.STYLE_STEP:
@@ -317,6 +340,30 @@ class Console:
             self._ensure_anim()
             self._redraw()
         return bar
+
+    def bar_run(self, bar: Bar | None) -> None:
+        """启动预分配条的计时与动画。"""
+        if bar is None:
+            return
+        with self._lock:
+            bar.run()
+            self._redraw()
+
+    def bar_remove(self, bar: Bar | None) -> None:
+        """从进度条块中移除未完成的条（如缓存命中无需显示进度）。"""
+        if bar is None:
+            return
+        with self._lock:
+            if bar in self._bars:
+                self._bars.remove(bar)
+                if self._capture is bar:
+                    self._capture = None
+                if not self._bars:
+                    self._pause_block()
+                    self._block_open = False
+                    self._block_lines = 0
+                else:
+                    self._redraw()
 
     def bar_update(self, bar: Bar | None, done: int, total: int) -> None:
         if bar is None:

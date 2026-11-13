@@ -434,19 +434,18 @@ def _download_one(
     index: int,
     total: int,
     stop: threading.Event,
+    bar: Bar | None = None,
 ) -> DownloadResult:
     cookie = _cookie_header(item.cookie)
     prefix = f"[{index}/{total}] "
     ensure_dir(item.path.parent)
-    bar: Bar | None = None
-    backend: DownloadBackend | None = None
-    work: Path | None = None
 
     try:
         if cache_hit:
             console.info(f"{prefix}{msg.MSG_USE_CACHE.format(file=item.path.name)}")
             ok, message = verify.verify_file(item.path, item.hash, config, item.app)
             if ok:
+                console.bar_remove(bar)
                 return DownloadResult(item=item, ok=True)
             console.warn(
                 msg.MSG_CACHE_INVALID.format(
@@ -455,21 +454,23 @@ def _download_one(
             )
             _purge(item.path)
 
-        transport = transport_url(item.url, config)
-        if transport != item.url:
-            console.info(
-                f"{prefix}{msg.MSG_DOWNLOAD_MIRROR.format(file=item.path.name)}"
-            )
-        elif not console.tty:
-            # TTY 下由进度条展示下载过程，不再输出普通状态行。
-            console.info(f"{prefix}{msg.MSG_DOWNLOAD.format(file=item.path.name)}")
-
         # 统一后端流程：staging_path → run → 校验 → commit（失败 rollback）。
+        transport = transport_url(item.url, config)
+        mirror = transport != item.url
+        if bar is None:
+            # 非 TTY / 窄终端：进度条回退为普通状态行。
+            text = (
+                msg.MSG_DOWNLOAD_MIRROR.format(file=item.path.name)
+                if mirror
+                else msg.MSG_DOWNLOAD.format(file=item.path.name)
+            )
+            console.info(f"{prefix}{text}")
+        else:
+            console.bar_run(bar)
         backend = _create_backend(config, stop)
         work = backend.staging_path(item.path)
         # 进度条覆盖下载与校验全程；python 后端经 progress() 实时推进，
         # 其余后端 progress() 恒为 (0, 0)，进度条保持弹跳动画模拟。
-        bar = console.bar_start(f"{prefix}{item.path.name}", Bar.STYLE_DOWNLOAD)
         poller = threading.Thread(
             target=_poll_progress, args=(backend, bar, stop), daemon=True
         )
@@ -538,6 +539,15 @@ def download_all(items: list[DownloadItem], config: dict[str, Any]) -> list[Down
     semaphore = threading.Semaphore(concurrency)
     results: list[DownloadResult | None] = [None] * len(items)
 
+    # 按编号顺序预分配进度条（等待中的条静止占位），保证块内顺序与编号一致。
+    bars: list[Bar | None] = []
+    for index, item in enumerate(items):
+        mirror = transport_url(item.url, config) != item.url
+        desc = item.path.name + (msg.MIRROR_SUFFIX if mirror else "")
+        bars.append(
+            console.bar_start(f"[{index + 1}/{len(items)}] {desc}", Bar.STYLE_DOWNLOAD, running=False)
+        )
+
     def worker(index: int) -> None:
         while not stop.is_set():
             if semaphore.acquire(timeout=0.2):
@@ -549,6 +559,7 @@ def download_all(items: list[DownloadItem], config: dict[str, Any]) -> list[Down
                         index + 1,
                         len(items),
                         stop,
+                        bars[index],
                     )
                 finally:
                     semaphore.release()
