@@ -47,17 +47,15 @@ BAR_SIZE_WIDTH = 10
 # 终端宽度低于该值时不启用进度条（行会折行导致重绘错位），回退为普通状态行。
 BAR_MIN_TERMINAL = 84
 BAR_DESC_MIN = 15
-BAR_DESC_MAX = 40
 BAR_SAFETY = 2
 BAR_DOWNLOAD_FIXED = 66
 BAR_MAX_MESSAGES = 8
 
 # 进度条描述列宽：下载条与步骤条共用同一公式，保证进度块起始列对齐。
-# fixed 为该样式 widgets 区的固定宽度（下载条最宽，以它为基准）。
+# fixed 为该样式 widgets 区的固定宽度（下载条最宽，以它为基准）；
+# 描述列不设上限，终端越宽文件名显示越完整。
 def _bar_desc_width(width: int) -> int:
-    return min(
-        BAR_DESC_MAX, max(BAR_DESC_MIN, width - BAR_DOWNLOAD_FIXED - BAR_SAFETY)
-    )
+    return max(BAR_DESC_MIN, width - BAR_DOWNLOAD_FIXED - BAR_SAFETY)
 
 # ANSI 光标控制（进度条块重绘）。
 _CURSOR_UP = "\x1b[{}A"
@@ -451,9 +449,6 @@ class Console:
                     lines.append(fit_text(message_lines[0], text_width))
                     for extra in message_lines[1:]:
                         lines.append(f"{BODY_INDENT}{fit_text(extra, text_width)}")
-        if any(bar.style == Bar.STYLE_DOWNLOAD for bar in self._bars):
-            lines.append(self._paint("2", "-" * min(width, 72)))
-            lines.append(self._paint(COLOR_INFO, self._total_render(width)))
         if self._block_open and self._block_lines:
             # 注意：ECMA-48 中 CUU 的参数 0 按缺省值 1 处理，上移 0 行时
             # 必须省略序列，否则单行块每帧净上移一行，逐帧吞掉上方日志。
@@ -461,7 +456,8 @@ class Console:
             out = _CURSOR_UP.format(up) if up > 0 else ""
             for line in lines[:-1]:
                 out += f"{_CLEAR_LINE}{_CURSOR_COL1}{line}\n"
-            out += f"{_CLEAR_LINE}{_CURSOR_COL1}{lines[-1]}"
+            # 尾行后接清除到底：块缩短（如缓存命中移除条）时擦掉底部残留行。
+            out += f"{_CLEAR_LINE}{_CURSOR_COL1}{lines[-1]}{_CLEAR_BELOW}"
         else:
             out = "".join(f"{line}\n" for line in lines[:-1])
             out += lines[-1]
@@ -480,35 +476,6 @@ class Console:
             print(seq, end="", flush=True)
             self._block_open = False
             self._block_lines = 0
-
-    def _total_render(self, width: int) -> str:
-        downloads = [bar for bar in self._bars if bar.style == Bar.STYLE_DOWNLOAD]
-        count = len(downloads)
-        done = sum(bar.done for bar in downloads)
-        total = sum(bar.total or 0 for bar in downloads)
-        # 运行中的条贡献实时速度，已完成的条贡献冻结的 EMA 终值。
-        speed = sum(bar.speed for bar in downloads)
-        begin = min(bar.begin for bar in downloads)
-        elapsed = time.monotonic() - begin
-        time_text = f"{int(elapsed) // 60:02d}m{int(elapsed) % 60:02d}s"
-        if total > 0:
-            pct = min(100, int(done * 100 / total))
-            percent = f"{pct:3d}%"
-            bar_widget_text = bar_widget(elapsed, pct)
-            speed_text = f"{human_size(speed)}/s" if speed > 0 else "--"
-            size_text = human_size(done)
-        else:
-            percent = "    "
-            bar_widget_text = bar_widget(elapsed, None)
-            speed_text = "--"
-            size_text = human_size(done) if done else "--"
-        widgets = (
-            f"{percent} {bar_widget_text} "
-            f"{pad_text(speed_text, BAR_SPEED_WIDTH, 'right')} | "
-            f"{pad_text(size_text, BAR_SIZE_WIDTH, 'right')} | {time_text}"
-        )
-        desc = f"[{count}/{count}] 总计"
-        return f"{pad_text(fit_text(desc, _bar_desc_width(width)), _bar_desc_width(width))} {widgets}"
 
     # ------------------------------------------------------------ 事务表
 
