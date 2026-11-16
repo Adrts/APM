@@ -48,8 +48,9 @@ APM 是一个面向 Windows 的命令行包管理器，主语言为 Python。
 <APM_ROOT>\                # Git 克隆目录，位置任意
 ├── .venv\                 # Python 虚拟环境（本地生成，不入库）
 ├── shims\                 # 命令入口目录，加入 PATH
-│   ├── apm.cmd / apm.ps1  # APM 自身入口
-│   ├── apm_setup.cmd      # 初始化虚拟环境与依赖
+│   ├── apm.exe            # APM 自身入口（apm_setup.cmd 生成，不入库）
+│   ├── apm.shim           # apm.exe 的旁车配置（apm_setup.cmd 生成，不入库）
+│   ├── apm_setup.cmd      # 初始化虚拟环境、依赖并生成入口
 │   └── requirements.txt   # Python 依赖清单
 ├── apps\                  # 已安装软件
 │   ├── apm\               # APM 自身（仓库内）
@@ -67,7 +68,7 @@ APM 是一个面向 Windows 的命令行包管理器，主语言为 Python。
 | 路径 | 用途 | 说明 |
 | --- | --- | --- |
 | `.venv\` | Python 虚拟环境 | 由 `shims\apm_setup.cmd` 用系统 Python 创建，不纳入 Git |
-| `shims\` | 命令入口 | APM 自身入口（`apm.cmd` / `apm.ps1`）、初始化脚本与依赖清单；各应用的命令入口（vendored shim 副本 + `.shim`，或 `.cmd` 文本包装）也生成在此，用户把该目录加入 PATH |
+| `shims\` | 命令入口 | APM 自身入口（`apm.exe` + `apm.shim`，由 `apm_setup.cmd` 生成，不入库）、初始化脚本与依赖清单；各应用的命令入口（vendored shim 副本 + `.shim`，或 `.cmd` 文本包装）也生成在此，用户把该目录加入 PATH |
 | `apps\apm\code\` | 主程序源码 | `apm` 包的模块文件 |
 | `apps\apm\supporting\` | 支撑文件 | vendored `shim.exe`（`shims\kiennq\`）与校验文件 |
 | `apps\` | 软件安装目录 | 每个软件一个子目录，内部版本布局与 Scoop 一致 |
@@ -76,7 +77,7 @@ APM 是一个面向 Windows 的命令行包管理器，主语言为 Python。
 | `cache\` | 安装包缓存 | 下载产物落盘位置，可随时清空 |
 | `persist\` | 持久化数据 | 软件配置、用户数据，卸载时默认保留 |
 
-除 `apps\apm\`、`shims\` 下的 `apm.cmd` / `apm.ps1` / `apm_setup.cmd` / `requirements.txt` 外，运行时目录、`shims` 下自动生成的应用入口文件与 `.venv` 均不纳入 Git 版本控制。
+除 `apps\apm\`、`shims\` 下的 `apm_setup.cmd` / `requirements.txt` 外，运行时目录、`shims` 下自动生成的入口文件（`apm.exe` / `apm.shim` 与各应用入口）与 `.venv` 均不纳入 Git 版本控制。
 
 ### 3.1 软件安装目录布局（与 Scoop 对齐）
 
@@ -501,20 +502,22 @@ apps\<app>\
 
 Windows 的 `PATHEXT` 默认不包含 `.PY`，直接输入 `apm` 不会执行 Python 脚本，必须写成 `python apm.py`。为了让调用方式与 Scoop 一致（`apm install ...`），需要一个无前缀的启动器。
 
-### 9.1 入口形态对比
+### 9.1 入口形态选择
 
 | 方案 | 是否同窗口 | 兼容性 | 结论 |
 | --- | --- | --- | --- |
-| `apm.exe`（vendored shim 副本 + `apm.shim` 旁车） | 是 | 最好，无 cmd 中转，Ctrl+C 立即退出 | **主入口** |
-| `apm.cmd` | 是 | cmd 与 PowerShell 都能从 PATH 解析 | 备用入口 |
-| `apm.ps1` | 是（在 PowerShell 当前进程内执行） | 受 ExecutionPolicy 限制 | 可选补充 |
+| `apm.exe`（vendored shim 副本 + `apm.shim` 旁车） | 是 | 最好，无 cmd 中转，Ctrl+C 立即退出 | **唯一入口** |
+| `apm.cmd` | 是 | ^C 后弹出「终止批处理操作吗(Y/N)?」二次确认 | 不提供 |
+| `apm.ps1` | 是 | 受 ExecutionPolicy 限制 | 不提供 |
 | `.py` 直接入口 | — | `PATHEXT` 默认不含 `.PY` | 不提供 |
 
-结论：以 `apm.exe` 作为主入口，`apm.cmd` / `apm.ps1` 作为备用入口，不提供 `.py` 直接入口。
+结论：`apm.exe` 是唯一命令入口，不提供 cmd / ps1 / `.py` 备用入口，避免多条入口路径行为分叉。
 
-批处理入口的固有限制：^C 打断批处理中运行的子进程时，cmd.exe 在批处理恢复执行前会弹出 `终止批处理操作吗(Y/N)?` 二次确认，且批处理文件必须保存为无 BOM 编码（UTF-8 BOM 会被 cmd 当作首行命令文本，导致 `@echo off` 失效并整屏回显命令）。`apm.exe` 无批处理包装，^C 后 Python 协作退出、进程立即结束，两种问题都不存在；UTF-8 输出改由 `apm.shim` 的 `args` 传入 `-X utf8` 保证。
+批处理入口的固有限制（不提供 cmd 入口的原因）：^C 打断批处理中运行的子进程时，cmd.exe 在批处理恢复执行前会弹出 `终止批处理操作吗(Y/N)?` 二次确认，且批处理文件必须保存为无 BOM 编码（UTF-8 BOM 会被 cmd 当作首行命令文本，导致 `@echo off` 失效并整屏回显命令）。`apm.exe` 无批处理包装，^C 后 Python 协作退出、进程立即结束，两种问题都不存在；UTF-8 输出改由 `apm.shim` 的 `args` 传入 `-X utf8` 保证。
 
-### 9.2 apm.exe 设计（主入口）
+入口不入库、由 setup 生成：仓库默认不含 `shims\apm.exe` / `shims\apm.shim`（`.gitignore` 只保留 `apm_setup.cmd` 与 `requirements.txt` 两个白名单文件）；运行 `shims\apm_setup.cmd` 时无条件复制 vendored shim 为 `apm.exe`，并按当前仓库位置写 `apm.shim` 绝对路径。克隆到任意位置后执行一次 setup 即获得可用入口。
+
+### 9.2 apm.exe 设计（唯一入口）
 
 `shims\apm.exe` 是 vendored shim（kiennq 变体）的副本，旁车文件 `shims\apm.shim`：
 
@@ -529,57 +532,13 @@ args = -X utf8 "D:\Workspace\APM\apps\apm\code\__main__.py"
 - `.shim` 旁车写干净 CRLF、无 BOM；`path` 为 `.venv` 解释器的绝对路径（kiennq shim 不解析相对路径）。
 - `args` 固定携带 `-X utf8`，等价 `PYTHONUTF8=1`，保证中文输出不乱码。
 - shim 直接启动 `python.exe`，继承当前控制台窗口；^C 送达整个进程组，Python 协作退出后进程立即结束，无批处理二次确认。
-- `.shim` 中路径随仓库位置硬编码为绝对路径；仓库整体移动后需重新生成 `apm.shim`（删除后运行 `apm_setup.cmd` 重建）。
+- `.shim` 中路径随仓库位置硬编码为绝对路径；仓库整体移动后重跑 `apm_setup.cmd` 重新生成 `apm.exe` / `apm.shim`。
 
-### 9.3 apm.cmd 设计（备用入口）
-
-```bat
-@echo off
-setlocal
-for %%I in ("%~dp0..") do set "APM_ROOT=%%~fI"
-set "APM_PY=%APM_ROOT%\.venv\Scripts\python.exe"
-if not exist "%APM_PY%" (
-    echo Virtual environment not found. Run shims\apm_setup.cmd first.
-    exit /b 1
-)
-set "PYTHONUTF8=1"
-"%APM_PY%" "%APM_ROOT%\apps\apm\code\__main__.py" %*
-exit /b %ERRORLEVEL%
-```
-
-关键点：
-
-- 直接调用控制台子系统程序 `python.exe`，子进程继承当前控制台，**不会新建窗口**。
-- 禁止使用 `start`、`powershell -Command Start-Process`、`pythonw.exe` 等方式启动，这些都会脱离或隐藏当前窗口。
-- `%*` 原样透传参数（保留引号），`exit /b %ERRORLEVEL%` 透传退出码，保证脚本/CI 可判断成败。
-- `PYTHONUTF8=1` 保证中文输出不乱码；`setlocal` 避免污染调用方环境。
-- `%~dp0` 以脚本自身位置解析路径，不依赖当前工作目录；`for %%I ... %%~fI` 把 `APM_ROOT` 规范化为绝对路径，目录整体移动后无需改配置。
-- 启动器位于根目录 `shims\`，与各应用的入口文件同目录，用户只需把 `shims` 一个目录加入 PATH。
-- 源码目录为 `apps\apm\code\`（包目录名为 `code`），`__main__.py` 启动时把自身注册为 `apm` 包再调用 CLI，因此启动器无需设置 `PYTHONPATH`。
-- 只用 `.venv` 中的解释器运行，不使用系统全局环境，保证依赖版本可控。
-- 虚拟环境不存在时直接提示并退出，不静默回退到系统 Python。
-
-### 9.4 apm.ps1 设计（可选）
-
-```powershell
-$env:APM_ROOT = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$python = Join-Path $env:APM_ROOT '.venv\Scripts\python.exe'
-if (-not (Test-Path $python)) {
-    Write-Host 'Virtual environment not found. Run shims\apm_setup.cmd first.'
-    exit 1
-}
-$env:PYTHONUTF8 = '1'
-& $python (Join-Path $env:APM_ROOT 'apps\apm\code\__main__.py') @args
-exit $LASTEXITCODE
-```
-
-`.ps1` 在 PowerShell 当前进程内执行，同样不会新建窗口；但可能被执行策略拦截，因此只作为补充，不作为主入口。
-
-### 9.4 解释器与依赖
+### 9.3 解释器与依赖
 
 - 解释器直接复用系统已安装的 Python，APM 不自带、不下载独立运行时。
 - 依赖清单为 `shims\requirements.txt`，版本全部固定；当前只依赖标准库，文件内容为空清单。
-- `shims\apm_setup.cmd` 的检测顺序为：PATH 中的 `python`（要求 ≥ 3.11）→ `py -3`（要求 ≥ 3.11）→ 报错；随后创建 `.venv`、升级 pip、安装 `requirements.txt` 中的依赖。
+- `shims\apm_setup.cmd` 的检测顺序为：PATH 中的 `python`（要求 ≥ 3.11）→ `py -3`（要求 ≥ 3.11）→ 报错；随后创建 `.venv`、升级 pip、安装 `requirements.txt` 中的依赖，最后生成 `shims\apm.exe` 与 `shims\apm.shim` 入口。
 - 克隆后必须先执行一次 `shims\apm_setup.cmd`，之后启动器只使用 `.venv\Scripts\python.exe`。
 - `git pull` 更新自身后若依赖有变化，需重新执行 `shims\apm_setup.cmd`。
 - 系统未安装 Python 或版本过低时，`shims\apm_setup.cmd` 直接报错并说明最低版本要求。
@@ -876,9 +835,9 @@ exit $LASTEXITCODE
 
 ```mermaid
 flowchart TD
-    A["终端输入 apm 命令"] --> B["apm.cmd 或 apm.ps1"]
-    B --> C["由脚本自身路径推导 APM_ROOT"]
-    C --> V{"根目录 .venv 是否存在"}
+    A["终端输入 apm 命令"] --> B["shims\apm.exe（vendored shim）"]
+    B --> B2["读取同目录 apm.shim，启动 .venv 中的 python.exe"]
+    B2 --> V{"根目录 .venv 是否存在"}
     V -->|"否"| W["提示运行 shims\apm_setup.cmd 并退出"]
     V -->|"是"| D["venv 中的 python.exe 运行 apps\apm\code\__main__.py"]
     D --> E["短别名展开：in/rm/se/up/ls → 正式命令；* → --all"]
@@ -1246,7 +1205,7 @@ flowchart TD
 - Scoop 核心：Unlicense 或 MIT 双许可；官方 bucket（main、extras、versions、java、nonportable 等）：Unlicense。
 - 采用运行时拉取 bucket 的方式，不将第三方清单与安装包内置进 APM 分发包。
 - APM 自身使用 GPL-3.0，与上述许可兼容。
-- 仓库内 vendored 的 `supporting\shims\kiennq\shim.exe` 来源于 Scoop 参考实现的 shim（kiennq 变体，原生 C），随附 SHA-256 校验文件；其许可与 GPL-3.0 兼容，来源与校验值记录于 `supporting\shims\kiennq\`。
+- 仓库内 vendored 的 `supporting\shims\kiennq\shim.exe` 来源于 kiennq/scoop-better-shimexe（Scoop 的第三方 shim 替代实现，原生 C），随附 SHA-256 校验文件；上游采用 `MIT OR Unlicense` 双许可（与 GPL-3.0 兼容），上游 `LICENSE-MIT`、`LICENSE-UNLICENSE`、`README.md` 原文一并收录于 `supporting\shims\kiennq\`。
 - 后续需补充 `THIRD_PARTY_NOTICES`，保留 Scoop 与各 bucket 的许可声明。
 - 产品命名与宣传中不使用 Scoop 的名称与标识暗示官方关联。
 

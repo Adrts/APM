@@ -40,11 +40,9 @@ if errorlevel 1 exit /b 1
 "%PY%" -m pip install -r "%~dp0requirements.txt"
 if errorlevel 1 exit /b 1
 
-if not exist "%~dp0apm.exe" (
-    echo Restoring shims\apm.exe ...
-    copy /y "%ROOT%\apps\apm\supporting\shims\kiennq\shim.exe" "%~dp0apm.exe" >nul
-    if errorlevel 1 exit /b 1
-)
+echo Generating shims\apm.exe ...
+copy /y "%ROOT%\apps\apm\supporting\shims\kiennq\shim.exe" "%~dp0apm.exe" >nul
+if errorlevel 1 exit /b 1
 > "%~dp0apm.shim" (
     echo path = "%PY%"
     echo args = -X utf8 "%ROOT%\apps\apm\code\__main__.py"

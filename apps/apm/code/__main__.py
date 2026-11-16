@@ -3,7 +3,7 @@ import os
 import sys
 
 if __package__ in (None, ""):
-    # 以脚本方式直接运行（shims\apm.cmd / apm.ps1）：
+    # 以脚本方式直接运行（python apps\apm\code\__main__.py）：
     # 包目录名为 code，这里手工构建名为 apm 的常规包上下文，
     # 使包内全部相对导入（from . import ...）正常工作。
     _code_dir = os.path.dirname(os.path.abspath(__file__))
