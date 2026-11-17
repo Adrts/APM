@@ -1,6 +1,7 @@
 @echo off
 setlocal
 for %%I in ("%~dp0..") do set "ROOT=%%~fI"
+for %%I in ("%~dp0.") do set "SHIMDIR=%%~fI"
 set "VENV=%ROOT%\.venv"
 set "PY=%VENV%\Scripts\python.exe"
 set "SYSPY="
@@ -48,8 +49,13 @@ if errorlevel 1 exit /b 1
     echo args = -X utf8 "%ROOT%\apps\apm\code\__main__.py"
 )
 
+rem Write shims dir to user PATH: bootstrap the apm package and reuse
+rem apm.env.add_path (raw-value read, type preserved, dedup + prepend,
+rem WM_SETTINGCHANGE broadcast). Idempotent; already-present entries are skipped.
+"%PY%" -c "import importlib.util, os, sys; d = r'%ROOT%\apps\apm\code'; s = importlib.util.spec_from_file_location('apm', os.path.join(d, '__init__.py'), submodule_search_locations=[d]); m = importlib.util.module_from_spec(s); sys.modules['apm'] = m; s.loader.exec_module(m); from apm.env import add_path, read_path; b = read_path()[0]; add_path([r'%SHIMDIR%']); print(r'Already in user PATH: %SHIMDIR%' if b == read_path()[0] else r'Added to user PATH: %SHIMDIR%')"
+if errorlevel 1 exit /b 1
+
 echo.
-echo Setup complete.
-echo Add this directory to your user PATH:
-echo        %~dp0
+echo Setup complete. APM entry directory: %SHIMDIR%
+echo Already-running terminals need a restart to pick up the PATH change.
 exit /b 0

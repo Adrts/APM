@@ -40,7 +40,7 @@ APM 是一个面向 Windows 的命令行包管理器，主语言为 Python。
 - 依赖：`shims\requirements.txt`，用户克隆后运行初始化脚本创建虚拟环境（`.venv`）并安装依赖。当前运行时只使用 Python 标准库，`requirements.txt` 暂无第三方依赖。
 - 分发方式：Git 仓库分发。用户把仓库克隆到任意目录即可使用，不需要安装程序；APM 自身升级在仓库目录执行 `git pull`。建议使用 `--depth 1` 浅克隆，`git pull` 不会加深历史。
 - 安装根目录记为 `<APM_ROOT>`，即仓库克隆目录，由启动器根据自身路径推导，不写死盘符，整份目录可移动。
-- 首次使用需要两步：运行 `shims\apm_setup.cmd` 初始化虚拟环境与依赖；把 `<APM_ROOT>\shims` 加入用户 PATH。
+- 首次使用只需一步：运行 `shims\apm_setup.cmd`，自动完成虚拟环境创建、依赖安装、入口生成与用户 PATH 写入（幂等，可重复执行）。
 
 ## 3. 目录结构约定
 
@@ -50,7 +50,7 @@ APM 是一个面向 Windows 的命令行包管理器，主语言为 Python。
 ├── shims\                 # 命令入口目录，加入 PATH
 │   ├── apm.exe            # APM 自身入口（apm_setup.cmd 生成，不入库）
 │   ├── apm.shim           # apm.exe 的旁车配置（apm_setup.cmd 生成，不入库）
-│   ├── apm_setup.cmd      # 初始化虚拟环境、依赖并生成入口
+│   ├── apm_setup.cmd      # 全功能安装：虚拟环境、依赖、入口与用户 PATH
 │   └── requirements.txt   # Python 依赖清单
 ├── apps\                  # 已安装软件
 │   ├── apm\               # APM 自身（仓库内）
@@ -539,7 +539,7 @@ args = -X utf8 "D:\Workspace\APM\apps\apm\code\__main__.py"
 
 - 解释器直接复用系统已安装的 Python，APM 不自带、不下载独立运行时。
 - 依赖清单为 `shims\requirements.txt`，版本全部固定；当前只依赖标准库，文件内容为空清单。
-- `shims\apm_setup.cmd` 的检测顺序为：PATH 中的 `python`（要求 ≥ 3.11）→ `py -3`（要求 ≥ 3.11）→ 报错；随后创建 `.venv`、升级 pip、安装 `requirements.txt` 中的依赖，最后生成 `shims\apm.exe` 与 `shims\apm.shim` 入口。
+- `shims\apm_setup.cmd` 的检测顺序为：PATH 中的 `python`（要求 ≥ 3.11）→ `py -3`（要求 ≥ 3.11）→ 报错；随后创建 `.venv`、升级 pip、安装 `requirements.txt` 中的依赖，接着生成 `shims\apm.exe` 与 `shims\apm.shim` 入口，最后在脚本内以一行 `python -c` 引导 apm 包并复用 `apm.env.add_path` 的同一套写入规则把 shims 目录前置到用户 PATH（幂等，已存在则跳过）。
 - 克隆后必须先执行一次 `shims\apm_setup.cmd`，之后启动器只使用 `.venv\Scripts\python.exe`。
 - `git pull` 更新自身后若依赖有变化，需重新执行 `shims\apm_setup.cmd`。
 - 系统未安装 Python 或版本过低时，`shims\apm_setup.cmd` 直接报错并说明最低版本要求。
@@ -658,7 +658,7 @@ args = -X utf8 "D:\Workspace\APM\apps\apm\code\__main__.py"
 
 - 采用方案 A：每个 `env_add_path` 目录直接写入用户 PATH，不引入 `APM_PATH` 中间变量。
 - 安装时把目录前置到用户 PATH；卸载时移除对应目录，并按 11.3 的规则整键写回。
-- APM 自身的入口目录 `<APM_ROOT>\shims` 使用同一套写入规则，由用户首次使用时手动加入 PATH；之后 APM 不再改动自身条目。
+- APM 自身的入口目录 `<APM_ROOT>\shims` 使用同一套写入规则，由 `shims\apm_setup.cmd` 安装时自动前置写入（幂等）；APM 应用运行时不改动自身条目。
 
 ## 12. 命令集
 
