@@ -272,6 +272,7 @@ ERR_BUCKET_NAME_INVALID = "软件源名称无效：{name}"
 ERR_BUCKET_EXISTS = "软件源 '{name}' 已存在"
 ERR_BUCKET_NOT_FOUND = "软件源 '{name}' 不存在"
 ERR_BUCKET_NOT_GIT = "软件源 '{name}' 不是 git 仓库，无法更新"
+ERR_BUCKET_ORIGIN_MISSING = "软件源 '{name}' 缺少 remote origin，无法更新"
 ERR_BUCKET_DELETE_INCOMPLETE = "软件源 '{name}' 删除不完整，请关闭占用后重试"
 ERR_BUCKET_ADD_FAILED = "添加软件源失败：{name}\n{detail}"
 ERR_BUCKET_UNKNOWN = "未知软件源：{name}，请显式提供仓库地址"
@@ -296,7 +297,7 @@ MSG_USE_CACHE = "使用缓存 {file}"
 MSG_DOWNLOADED = "已下载 {file}"
 MSG_CACHE_INVALID = "缓存校验失败，重新下载：{file}\n{detail}"
 MSG_MIRROR_NOT_CONFIGURED = (
-    "未配置 {provider} 镜像前缀，按原始地址下载"
+    "未配置 {provider} 镜像前缀，按原始地址访问"
     "（可在 {config} 中设置 download.mirror.{provider}）"
 )
 MSG_DOWNLOAD_STAGE_FAILED = "下载阶段失败，已终止安装，未修改已安装内容"
@@ -485,7 +486,7 @@ CONFIG_DOCS: dict[str, str] = {
     "aria2 支持多连接分片下载，其余后端为单连接顺序下载",
     "download.concurrency.apps": "同时下载的应用数量上限",
     "download.concurrency.segments": "单个文件的分片并发连接数，仅 aria2 后端生效，其余后端按 1 处理",
-    "download.mirror.github": "GitHub 加速前缀，留空表示直连（下载时提示一次）。"
+    "download.mirror.github": "GitHub 加速前缀，留空表示直连（下载与软件源仓库访问时提示一次）。"
     "填写后 GitHub 下载地址改写为「前缀 + 原始地址」，例如 https://mirror.example.com/ ，"
     "用于绕过网络对 GitHub 的限速",
     "download.mirror.sourceforge": "SourceForge 加速前缀，留空表示直连。填写后改写规则同上",

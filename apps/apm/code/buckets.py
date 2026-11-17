@@ -6,11 +6,12 @@ import json
 import re
 from pathlib import Path
 
-from . import messages as msg, tools
+from . import config, messages as msg, tools
 from . import paths
 from .errors import BucketError, ManifestError
 from .known_buckets import KNOWN_BUCKETS
 from .output import console
+from .transport import transport_url
 from .util import ensure_dir, remove_path, run, sanitary_name, write_json
 
 BUCKET_NAME_RE = re.compile(r"^[\w.\-]+$")
@@ -150,6 +151,10 @@ def add_bucket(name: str, repo: str | None = None) -> None:
     proc = run(
         [
             str(git),
+            # 传输时镜像改写（url.insteadOf），origin 始终记录原始地址；
+            # 未配置镜像时为恒等改写，命令形状保持一致。
+            "-c",
+            f"url.{transport_url(repo, config.load())}.insteadOf={repo}",
             "clone",
             "--depth",
             "1",
@@ -191,8 +196,27 @@ def update_bucket(name: str) -> None:
     git = tools.find_executable("git.exe")
     if not git:
         raise BucketError(msg.ERR_GIT_MISSING)
+    origin = run(
+        [str(git), "-C", str(root), "config", "--get", "remote.origin.url"]
+    )
+    if origin.returncode != 0 or not origin.stdout.strip():
+        raise BucketError(msg.ERR_BUCKET_ORIGIN_MISSING.format(name=name))
+    remote = origin.stdout.strip()
     fetch = run(
-        [str(git), "-C", str(root), "fetch", "--depth", "1", "--no-tags", "origin"]
+        [
+            str(git),
+            "-C",
+            str(root),
+            # 传输时镜像改写（url.insteadOf），origin 始终记录原始地址；
+            # 未配置镜像时为恒等改写，命令形状保持一致。
+            "-c",
+            f"url.{transport_url(remote, config.load())}.insteadOf={remote}",
+            "fetch",
+            "--depth",
+            "1",
+            "--no-tags",
+            "origin",
+        ]
     )
     if fetch.returncode != 0:
         raise BucketError(

@@ -10,18 +10,16 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urldefrag, urlparse
+from urllib.parse import urldefrag
 
 from . import cache, messages as msg, paths, tools, verify
 from .errors import DownloadError
 from .manifest import AppRef
 from .output import Bar, console
+from .transport import transport_url
 from .util import ensure_dir, human_size, lp, remove_path
 
 USER_AGENT = "APM/0.1"
-
-_warned_mirrors: set[str] = set()
-_warn_lock = threading.Lock()
 
 
 @dataclass
@@ -74,48 +72,6 @@ def _cookie_header(cookie: Any) -> str | None:
         parts = [_cookie_header(item) for item in cookie]
         return ";".join(part for part in parts if part) or None
     return str(cookie)
-
-
-def _warn_mirror(provider: str) -> None:
-    with _warn_lock:
-        if provider in _warned_mirrors:
-            return
-        _warned_mirrors.add(provider)
-    console.warn(
-        msg.MSG_MIRROR_NOT_CONFIGURED.format(
-            provider=provider, config=paths.CONFIG_FILE
-        )
-    )
-
-
-def transport_url(url: str, config: dict[str, Any]) -> str:
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        return url
-    host = (parsed.hostname or "").lower()
-    lowered = url.lower()
-    mirror = config.get("download", {}).get("mirror", {})
-    is_github = (
-        "github.com" in host
-        or "github.com" in lowered
-        or "githubusercontent.com" in host
-        or "githubusercontent.com" in lowered
-    )
-    if is_github:
-        prefix = str(mirror.get("github") or "").strip()
-        if not prefix:
-            _warn_mirror("github")
-        elif not url.lower().startswith(prefix.lower()):
-            return prefix.rstrip("/") + "/" + url
-        return url
-    if "sourceforge.net" in host or "sourceforge.net" in url.lower():
-        prefix = str(mirror.get("sourceforge") or "").strip()
-        if not prefix:
-            _warn_mirror("sourceforge")
-        elif not url.lower().startswith(prefix.lower()):
-            return prefix.rstrip("/") + "/" + url
-        return url
-    return url
 
 
 class _Interrupted(Exception):

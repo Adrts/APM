@@ -426,13 +426,14 @@ apps\<app>\
   - `download.mirror.sourceforge`：SourceForge 加速前缀。
 - 命中且已配置前缀时，改写为 `<前缀>/<原始 URL>`；未配置前缀时输出一次提示，按原地址下载。
 - 非可加速地址原样通过。
+- bucket 的 git 克隆/更新复用同一改写规则：经 `git -c url.<改写地址>.insteadOf=<原始地址>` 在传输时生效，remote origin 始终记录原始地址；修改镜像配置后下一次 update 即生效，无需重建 bucket。
 
 约束：
 
 - 缓存键、哈希匹配和 `hash_for_url` 一律使用**原始 URL**；加速只影响实际传输地址，切换前缀不会导致缓存失效。
 - 不重复加前缀：URL 已经以配置的前缀开头时直接使用。
 - 镜像下载失败直接判定为本次下载失败，不回退原地址、不切换其他镜像或后端、不重试；取消配置即可恢复直连。
-- 镜像只作用于软件下载，不作用于 bucket 的 git 克隆/更新和 APM 自身更新。
+- 镜像作用于软件下载与 bucket 的 git 克隆/更新（软件源仓库为 GitHub 地址时同样改写）；不作用于 APM 自身更新。
 - 无内置默认前缀：`github` / `sourceforge` 留空即完全不启用镜像，需用户显式填写。
 - 不提供可用性探测：APM 不主动测速、不自动挑选或轮换前缀，配置什么就用什么。
 - 加速前缀属于第三方服务，由用户自行选择并承担可用性风险。
@@ -475,7 +476,7 @@ apps\<app>\
 ```
 
 - `backend` 取值范围：`python` / `aria2` / `curl` / `wget`，必须显式指定，含义见第 7.1 节。
-- `download.mirror.github` / `download.mirror.sourceforge` 为加速前缀，无默认值，必须手动填写，留空表示直连，规则见第 7.6 节。
+- `download.mirror.github` / `download.mirror.sourceforge` 为加速前缀，无默认值，必须手动填写，留空表示直连，作用于软件下载与软件源仓库访问，规则见第 7.6 节。
 - `verify.method` 取值 `hashlib` / `7zip`，必须显式指定，默认 `hashlib`，规则见第 7.4 节。
 - `verify.seven_zip` 可指定 `7z.exe` 路径，留空则按第 7.4 节的顺序自动查找。
 - `extract.seven_zip` / `extract.innounp` 可指定外部工具路径，留空则按第 7.5 节的顺序自动查找。
@@ -491,7 +492,7 @@ apps\<app>\
 | `download.backend` | `python` | 下载后端，可选 `python` / `aria2` / `curl` / `wget` |
 | `download.concurrency.apps` | `3` | 多软件并发下载数 |
 | `download.concurrency.segments` | `5` | 单文件分片并发数，仅 aria2 生效 |
-| `download.mirror.github` | 空 | GitHub 加速前缀，留空表示直连 |
+| `download.mirror.github` | 空 | GitHub 加速前缀，留空表示直连，作用于软件下载与软件源仓库 |
 | `download.mirror.sourceforge` | 空 | SourceForge 加速前缀，留空表示直连 |
 | `verify.method` | `hashlib` | 校验方式，可选 `hashlib` / `7zip` |
 | `verify.seven_zip` | 空 | 校验用 `7z.exe` 路径，留空按查找顺序自动定位 |
@@ -870,7 +871,7 @@ flowchart TD
     G0 -->|"否"| G1["报错：未检测到 git"]
     G0 -->|"是"| G{"buckets/name 是否已存在"}
     G -->|"是"| H["报错：bucket 已存在"]
-    G -->|"否"| I["git clone --depth 1 --single-branch --no-tags"]
+    G -->|"否"| I["git -c url.<改写>.insteadOf=<repo> clone --depth 1 --single-branch --no-tags"]
     I --> J{"是否存在 bucket 子目录"}
     J -->|"是"| K["清单目录 = buckets/name/bucket"]
     J -->|"否"| L["清单目录 = buckets/name"]
@@ -885,7 +886,7 @@ flowchart TD
     A["apm update 或 apm update --all（* 等价）"] --> B["枚举目标 bucket"]
     B --> B0{"找到 git 程序入口：shims → PATH"}
     B0 -->|"否"| F["保留旧索引，记录失败，继续下一个"]
-    B0 -->|"是"| C["git fetch --depth 1 --no-tags origin"]
+    B0 -->|"是"| C["git -c url.<改写>.insteadOf=<origin> fetch --depth 1 --no-tags origin"]
     C --> D{"fetch 是否成功"}
     D -->|"是"| E["git reset --hard FETCH_HEAD"]
     D -->|"否"| F["保留旧索引，记录失败，继续下一个"]
@@ -900,6 +901,7 @@ flowchart TD
 - 克隆固定使用 `--depth 1 --single-branch --no-tags`，更新固定使用 `git fetch --depth 1`，任何情况下都不执行 `unshallow`。
 - 更新采用 `fetch + reset --hard FETCH_HEAD`，不做 merge，避免 bucket 强制推送时 `--ff-only` 失败。
 - fetch 失败时保留旧索引，本次更新标记失败，不影响已安装软件。
+- origin 始终记录原始仓库地址，镜像改写仅通过 `git -c url.insteadOf` 在传输时生效；缺少 remote origin 时更新直接报错。
 
 ### 13.4 安装（两阶段）
 
