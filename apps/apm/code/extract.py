@@ -383,7 +383,7 @@ def _dispatch(
             seven_zip = tools.find_7z(config)
             if not seven_zip:
                 raise
-            console.warn(
+            console.detail(
                 msg.MSG_STDLIB_FALLBACK.format(file=archive.name)
             )
             _seven_zip_tar(archive, dest, seven_zip)
@@ -396,7 +396,7 @@ def _dispatch(
             seven_zip = tools.find_7z(config)
             if not seven_zip:
                 raise
-            console.warn(
+            console.detail(
                 msg.MSG_STDLIB_FALLBACK.format(file=archive.name)
             )
             _seven_zip_extract(archive, dest, seven_zip)

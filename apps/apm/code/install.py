@@ -514,7 +514,7 @@ def _create_bin_entries(
             for extension in (".cmd", ".exe", ".shim")
         ]
         if any(variant.exists() for variant in variants):
-            console.warn(msg.MSG_OVERWRITE_SHIM.format(name=wrapper_name))
+            console.detail(msg.MSG_OVERWRITE_SHIM.format(name=wrapper_name))
         for variant in variants:
             remove_path(variant)
         if resolved.suffix.lower() in (".exe", ".com"):

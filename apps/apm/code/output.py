@@ -6,8 +6,9 @@
 - ``Bar``：进度条行的状态与渲染（确定进度按字节推进，未知进度用
   ``<=>`` 弹跳模拟动画）；
 - 进度条块：多个进度条共享一块终端区域，用 ANSI 光标序列整体重绘。
-  事务步骤（安装/卸载）运行期间的 info 消息就地显示在所属进度条下方，
-  步骤完成后定格为历史行；下载条完成后保留在块内，阶段结束时统一定格。
+  事务步骤（安装/卸载）运行期间的 info 消息与警告就地显示在所属进度
+  条下方，步骤完成后定格为历史行；下载条完成后保留在块内，阶段结束
+  时统一定格。
 
 着色范围仅限结构性元素：success / warn / error 状态行正文分别使用绿色、
 黄色、红色，info 状态行与消息正文不着色；表头与小节标题使用青色加粗并
@@ -242,6 +243,13 @@ class Console:
         self._emit(COLOR_SUCCESS, msg_text, sys.stdout)
 
     def warn(self, msg_text: str) -> None:
+        """警告行：步骤进度条运行期间就地显示在所属条目下方，其余输出到 stderr。"""
+        with self._lock:
+            if self._capture is not None:
+                self._capture.messages.append(msg_text)
+                self._trim_messages(self._capture)
+                self._redraw()
+                return
         self._emit(COLOR_WARN, msg_text, sys.stderr)
 
     def error(self, msg_text: str) -> None:
