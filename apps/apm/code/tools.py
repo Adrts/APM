@@ -62,19 +62,5 @@ def require_innounp(config: dict[str, Any]) -> Path:
     return tool
 
 
-BACKEND_EXES = {
-    "aria2": "aria2c.exe",
-    "curl": "curl.exe",
-    "wget": "wget.exe",
-}
-
-
-def find_backend(name: str) -> Path | None:
-    exe = BACKEND_EXES.get(name)
-    if not exe:
-        return None
-    return find_executable(exe)
-
-
 def run_tool(cmd: list[str], cwd: Path | None = None):
     return run([str(part) for part in cmd], cwd=cwd)

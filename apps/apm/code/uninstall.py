@@ -176,6 +176,7 @@ def _uninstall_one(app: str, purge: bool) -> None:
     persist_dir = paths.persist_app_dir(app)
     version = str(meta.get("version") or installed.installed_version(app) or "")
     filenames = _hook_names(ref)
+    # 钩子与 uninstaller 共用统一上下文（键名约定见 ps._prelude）。
     context = dict(
         app=app,
         version=version,
@@ -186,9 +187,10 @@ def _uninstall_one(app: str, purge: bool) -> None:
         architecture=ref.architecture,
         fname=filenames,
         manifest_path=ref.path,
+        cmd="uninstall",
     )
 
-    ps.run_hook("pre_uninstall", ref.field("pre_uninstall"), cmd="uninstall", **context)
+    ps.run_hook("pre_uninstall", ref.field("pre_uninstall"), context=context)
 
     uninstaller = manifest.uninstaller_of(ref)
     if uninstaller:
@@ -214,25 +216,14 @@ def _uninstall_one(app: str, purge: bool) -> None:
                 executable,
                 args,
                 original_dir,
-                context={
-                    "app": app,
-                    "version": version,
-                    "bucket": ref.bucket,
-                    "dir": current,
-                    "original_dir": original_dir,
-                    "persist_dir": persist_dir,
-                    "architecture": ref.architecture,
-                    "fname": filenames[0] if filenames else "",
-                    "manifest_path": ref.path,
-                    "cmd": "uninstall",
-                },
+                context={**context, "fname": file_name},
             )
         # script 分支：无条件执行。
         script = uninstaller.get("script")
         if script:
-            ps.run_hook("uninstaller", script, cmd="uninstall", **context)
+            ps.run_hook("uninstaller", script, context=context)
 
-    ps.run_hook("post_uninstall", ref.field("post_uninstall"), cmd="uninstall", **context)
+    ps.run_hook("post_uninstall", ref.field("post_uninstall"), context=context)
 
     _remove_shortcuts(app, meta, ref)
     _remove_bins(app, meta)

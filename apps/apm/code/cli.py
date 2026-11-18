@@ -368,23 +368,20 @@ def _set_hold(apps: list[str], hold: bool) -> int:
 
 
 def _update(targets: list[str], all_apps: bool = False, assume_yes: bool = False) -> int:
-    if not all_apps and not targets:
+    # bucket 刷新与本体更新两阶段对 update 与 update --all 结构一致：
+    # bucket 失败仅记录并继续（保留旧索引），本体阶段照常执行。
+    if all_apps or not targets:
         failures = buckets.update_buckets()
         if failures:
             console.failure_list(failures)
-            return 1
         if selfupdate.run_self_update(assume_yes):
             return 1
-        console.success(msg.MSG_BUCKET_INDEX_UPDATED)
-        return 0
-    if all_apps:
-        bucket_failures = buckets.update_buckets()
-        if bucket_failures:
-            console.warn(msg.MSG_BUCKET_PARTIAL_FAILED)
-        if selfupdate.run_self_update(assume_yes):
-            return 1
-        result = install.update_apps([], assume_yes=assume_yes)
-        return 1 if bucket_failures else result
+        if all_apps:
+            result = install.update_apps([], assume_yes=assume_yes)
+        else:
+            console.success(msg.MSG_BUCKET_INDEX_UPDATED)
+            result = 0
+        return 1 if failures else result
     return install.update_apps(targets, assume_yes=assume_yes)
 
 

@@ -267,7 +267,6 @@ MSG_BUCKET_REMOVED = "软件源 '{name}' 已删除"
 MSG_BUCKET_UPDATED = "软件源 '{name}' 已更新"
 MSG_BUCKET_UPDATE_FAILED = "软件源 '{name}' 更新失败，保留旧索引"
 MSG_BUCKET_INDEX_UPDATED = "已更新全部软件源索引"
-MSG_BUCKET_PARTIAL_FAILED = "部分软件源更新失败，继续使用现有索引"
 MSG_BUCKET_AMBIGUOUS = (
     "应用 '{app}' 存在于多个软件源（{names}），使用 '{chosen}'"
 )
@@ -280,7 +279,7 @@ ERR_BUCKET_DELETE_INCOMPLETE = "软件源 '{name}' 删除不完整，请关闭�
 ERR_BUCKET_ADD_FAILED = "添加软件源失败：{name}\n{detail}"
 ERR_BUCKET_UNKNOWN = "未知软件源：{name}，请显式提供仓库地址"
 ERR_GIT_MISSING = "未检测到 git，请安装 git 或将其所在目录加入 PATH"
-ERR_SELF_NOT_GIT = "APM 本体不是 git 仓库，无法更新"
+ERR_GIT_INIT = "git init 失败"
 MSG_SELF_UPDATED = "{app} 本体已更新（{old} -> {new}）"
 MSG_SELF_DEPS_HINT = "依赖如有变化，请重新运行 shims\\apm_setup.cmd"
 ERR_APP_NOT_FOUND = "找不到应用 '{app}'，可运行 apm search {app} 查看"
@@ -316,9 +315,7 @@ ERR_TLS_CERTIFICATE = (
     "提示：wget 后端需要可用的 CA 证书，请确认 cacert 已安装且 wget.ini 指向 cacert.pem；"
     "也可改用 curl / python / aria2 后端"
 )
-ERR_CURL_MISSING = "未检测到 curl.exe"
-ERR_WGET_MISSING = "未检测到 wget.exe"
-ERR_ARIA2_MISSING = "未检测到 aria2c.exe"
+ERR_BACKEND_MISSING = "未检测到 {exe}"
 ERR_BACKEND_UNKNOWN = "未知的下载后端：{backend}"
 
 # ---------------------------------------------------------------- 校验

@@ -184,50 +184,53 @@ def run_script(script: str, cwd: Path | None = None) -> subprocess.CompletedProc
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def _prelude(context: dict[str, Any]) -> list[str]:
+    """内联 PowerShell 的变量前置段；钩子与 installer 共用同一构造。
+
+    context 键名固定为：app、version、bucket、directory、original_dir、
+    persist_dir、architecture、fname、manifest_path、cmd。fname 支持
+    字符串（installer 场景）与字符串列表（钩子场景）。
+    """
+    fname = context["fname"]
+    if isinstance(fname, list):
+        fname_expr = "@(" + ", ".join(_quote(item) for item in fname) + ")"
+    else:
+        fname_expr = _quote(fname)
+    return [
+        f"$app = {_quote(context['app'])}",
+        f"$version = {_quote(context['version'])}",
+        f"$bucket = {_quote(context['bucket'])}",
+        f"$dir = {_quote(context['directory'])}",
+        f"$original_dir = {_quote(context['original_dir'])}",
+        f"$persist_dir = {_quote(context['persist_dir'])}",
+        "$global = $false",
+        f"$architecture = {_quote(context['architecture'])}",
+        f"$fname = {fname_expr}",
+        f"$cmd = {_quote(context['cmd'])}",
+        f"$bucketsdir = {_quote(paths.BUCKETS_DIR)}",
+        f"$cachedir = {_quote(paths.CACHE_DIR)}",
+        f"$scoopdir = {_quote(paths.ROOT)}",
+        f"$manifest = Get-Content -LiteralPath {_quote(context['manifest_path'])} -Raw -Encoding UTF8 | ConvertFrom-Json",
+    ]
+
+
 def run_hook(
     hook_type: str,
     script: str | list[str] | None,
     *,
-    app: str,
-    version: str,
-    bucket: str,
-    directory: Path,
-    original_dir: Path,
-    persist_dir: Path,
-    architecture: str,
-    fname: str | list[str],
-    manifest_path: Path,
-    cmd: str = "",
+    context: dict[str, Any],
 ) -> None:
+    """执行 manifest 钩子脚本，上下文由统一的 context 字典提供。"""
     if not script:
         return
     body = script if isinstance(script, str) else "\n".join(str(item) for item in script)
     if not body.strip():
         return
-    if isinstance(fname, list):
-        fname_expr = "@(" + ", ".join(_quote(item) for item in fname) + ")"
-    else:
-        fname_expr = _quote(fname)
-    prelude = [
-        f"$app = {_quote(app)}",
-        f"$version = {_quote(version)}",
-        f"$bucket = {_quote(bucket)}",
-        f"$dir = {_quote(directory)}",
-        f"$original_dir = {_quote(original_dir)}",
-        f"$persist_dir = {_quote(persist_dir)}",
-        "$global = $false",
-        f"$architecture = {_quote(architecture)}",
-        f"$fname = {fname_expr}",
-        f"$cmd = {_quote(cmd)}",
-        f"$bucketsdir = {_quote(paths.BUCKETS_DIR)}",
-        f"$cachedir = {_quote(paths.CACHE_DIR)}",
-        f"$scoopdir = {_quote(paths.ROOT)}",
-        f"$manifest = Get-Content -LiteralPath {_quote(manifest_path)} -Raw -Encoding UTF8 | ConvertFrom-Json",
-        body,
-    ]
     hook_name = msg.HOOK_NAMES.get(hook_type, hook_type)
     console.detail(msg.MSG_HOOK_RUNNING.format(hook=hook_name))
-    proc = run_script("\r\n".join(prelude), cwd=original_dir)
+    prelude = _prelude(context)
+    prelude.append(body)
+    proc = run_script("\r\n".join(prelude), cwd=context["original_dir"])
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()
         raise InstallError(
@@ -244,27 +247,13 @@ def run_installer(
     *,
     context: dict[str, Any],
 ) -> None:
+    """运行安装器/卸载器，context 与 run_hook 共用同一键名约定。"""
     if not executable.is_file():
         raise InstallError(msg.ERR_INSTALLER_MISSING.format(path=executable))
     suffix = executable.suffix.lower()
     if suffix == ".ps1":
-        prelude = [
-            f"$app = {_quote(context['app'])}",
-            f"$version = {_quote(context['version'])}",
-            f"$bucket = {_quote(context['bucket'])}",
-            f"$dir = {_quote(context['dir'])}",
-            f"$original_dir = {_quote(context['original_dir'])}",
-            f"$persist_dir = {_quote(context['persist_dir'])}",
-            "$global = $false",
-            f"$architecture = {_quote(context['architecture'])}",
-            f"$fname = {_quote(context['fname'])}",
-            f"$cmd = {_quote(context.get('cmd', 'install'))}",
-            f"$bucketsdir = {_quote(paths.BUCKETS_DIR)}",
-            f"$cachedir = {_quote(paths.CACHE_DIR)}",
-            f"$scoopdir = {_quote(paths.ROOT)}",
-            f"$manifest = Get-Content -LiteralPath {_quote(context['manifest_path'])} -Raw -Encoding UTF8 | ConvertFrom-Json",
-            f"& {_quote(executable)} {args}",
-        ]
+        prelude = _prelude(context)
+        prelude.append(f"& {_quote(executable)} {args}")
         proc = run_script("\r\n".join(prelude), cwd=cwd)
     elif suffix == ".msi":
         cmd = ["msiexec", "/i", str(executable)]

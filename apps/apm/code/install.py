@@ -72,15 +72,22 @@ def _expand_specs(specs: list[str]) -> list[str]:
 
 def install_apps(
     specs: list[str],
-    for_update: bool = False,
-    download_only: bool = False,
+    mode: str = "install",
     assume_yes: bool = False,
 ) -> int:
+    """两阶段安装引擎的唯一入口，mode 显式指定流程分支。
+
+    - ``install``：完整安装（依赖解析时跳过已安装的同版本应用）；
+    - ``update``：更新已安装应用（不递归更新依赖）；
+    - ``download``：仅执行阶段一下载并输出缓存路径，不确认、不安装。
+
+    三种模式的流程结构一致，仅个别步骤按 mode 收敛。
+    """
     specs = _expand_specs(specs)
     for spec in specs:
         if manifest.parse_app_spec(spec)[1].lower() == "apm":
             raise ApmError(msg.MSG_APM_RESERVED)
-    refs, roots = deps.resolve(specs, for_update=for_update or download_only)
+    refs, roots = deps.resolve(specs, for_update=mode != "install")
     if not refs:
         console.info(msg.MSG_NOTHING_TO_PROCESS)
         return 0
@@ -92,7 +99,7 @@ def install_apps(
 
     _print_transaction_table(refs, roots)
     console.plain(msg.SECTION_DOWNLOAD)
-    if not download_only and not assume_yes:
+    if mode != "download" and not assume_yes:
         if not console.confirm(msg.MSG_CONFIRM):
             console.info(msg.MSG_CANCELED)
             return 1
@@ -108,7 +115,7 @@ def install_apps(
         console.error(msg.MSG_DOWNLOAD_STAGE_FAILED)
         return 1
 
-    if download_only:
+    if mode == "download":
         for result in results:
             console.plain(str(result.item.path))
         console.success(msg.MSG_COMPLETE)
@@ -247,12 +254,12 @@ def update_apps(targets: list[str], assume_yes: bool = False) -> int:
             return 1
         console.success(msg.MSG_ALL_LATEST)
         return 0
-    result = install_apps(specs, for_update=True, assume_yes=assume_yes)
+    result = install_apps(specs, mode="update", assume_yes=assume_yes)
     return 1 if errors else result
 
 
 def download_apps(specs: list[str]) -> int:
-    return install_apps(specs, for_update=True, download_only=True)
+    return install_apps(specs, mode="download")
 
 
 def _install_one(
@@ -285,22 +292,23 @@ def _install_one(
     try:
         materialized = _materialize(ref, version_path, cfg, results_by_path)
 
-        ps.run_hook(
-            "pre_install",
-            ref.field("pre_install"),
-            app=app,
-            version=version,
-            bucket=ref.bucket,
-            directory=version_path,
-            original_dir=version_path,
-            persist_dir=persist_dir,
-            architecture=ref.architecture,
-            fname=materialized.filenames,
-            manifest_path=ref.path,
-            cmd="install",
-        )
+        # 钩子与 installer 共用统一上下文（键名约定见 ps._prelude）。
+        # pre_install 与 installer 执行时 current 尚未切换，$dir 指向版本目录。
+        context = {
+            "app": app,
+            "version": version,
+            "bucket": ref.bucket,
+            "directory": version_path,
+            "original_dir": version_path,
+            "persist_dir": persist_dir,
+            "architecture": ref.architecture,
+            "fname": materialized.filenames,
+            "manifest_path": ref.path,
+            "cmd": "install",
+        }
+        ps.run_hook("pre_install", ref.field("pre_install"), context=context)
 
-        _run_installer(ref, version_path, materialized)
+        _run_installer(ref, version_path, materialized, context)
 
         console.detail(msg.MSG_SWITCH_CURRENT.format(version=version))
         _switch_current(current, version_path)
@@ -311,19 +319,11 @@ def _install_one(
         _apply_env(ref, current, version_path, persist_dir, artifacts)
         _apply_persist(ref, version_path, persist_dir, artifacts)
 
+        # post_install 时 current 已切换，$dir 指向 current。
         ps.run_hook(
             "post_install",
             ref.field("post_install"),
-            app=app,
-            version=version,
-            bucket=ref.bucket,
-            directory=current,
-            original_dir=version_path,
-            persist_dir=persist_dir,
-            architecture=ref.architecture,
-            fname=materialized.filenames,
-            manifest_path=ref.path,
-            cmd="install",
+            context={**context, "directory": current},
         )
 
         _prune_old_versions(old_versions)
@@ -417,7 +417,12 @@ def _materialize(
     return Materialized(filenames=filenames, copied=copied)
 
 
-def _run_installer(ref: AppRef, version_path: Path, materialized: Materialized) -> None:
+def _run_installer(
+    ref: AppRef,
+    version_path: Path,
+    materialized: Materialized,
+    context: dict[str, Any],
+) -> None:
     installer = manifest.installer_of(ref)
     if not installer:
         return
@@ -452,38 +457,14 @@ def _run_installer(ref: AppRef, version_path: Path, materialized: Materialized) 
             executable,
             args,
             version_path,
-            context={
-                "app": ref.app,
-                "version": ref.version,
-                "bucket": ref.bucket,
-                "dir": version_path,
-                "original_dir": version_path,
-                "persist_dir": persist_dir,
-                "architecture": ref.architecture,
-                "fname": file_name,
-                "manifest_path": ref.path,
-                "cmd": "install",
-            },
+            context={**context, "directory": version_path, "fname": file_name},
         )
         if not installer.get("keep") and file_name in materialized.copied:
             remove_path(materialized.copied[file_name])
     # script 分支：无条件执行。
     script = installer.get("script")
     if script:
-        ps.run_hook(
-            "installer",
-            script,
-            app=ref.app,
-            version=ref.version,
-            bucket=ref.bucket,
-            directory=version_path,
-            original_dir=version_path,
-            persist_dir=persist_dir,
-            architecture=ref.architecture,
-            fname=materialized.filenames,
-            manifest_path=ref.path,
-            cmd="install",
-        )
+        ps.run_hook("installer", script, context=context)
 
 
 def _create_bin_entries(

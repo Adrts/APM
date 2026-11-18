@@ -85,8 +85,11 @@ def _request_url(url: str) -> str:
 class DownloadBackend:
     """下载后端统一接口（对应 13.11 流程图的各下载分支封装）。
 
-    四个后端（python / curl / wget / aria2）的方法签名与传出完全一致：
+    四个后端（python / curl / wget / aria2）的构造参数、方法签名与
+    传出完全一致：
 
+    - ``__init__(config, stop)``：基类统一完成外部工具查找（由 ``exe_name``
+      类属性声明；标准库后端留空跳过），缺失时统一报 ``DownloadError``；
     - ``staging_path(dest)``：本次下载的工作路径（python/curl/wget 为
       ``缓存名.download``，aria2 为正式缓存名本身）；
     - ``run(url, work, cookie)``：把字节写入工作路径，失败抛出
@@ -102,10 +105,19 @@ class DownloadBackend:
     """
 
     name = ""
+    # 外部后端的可执行文件名；python 等标准库后端留空，不参与查找。
+    exe_name = ""
 
     def __init__(self, config: dict[str, Any], stop: threading.Event) -> None:
         self.config = config
         self.stop = stop
+        if self.exe_name:
+            exe = tools.find_executable(self.exe_name)
+            if not exe:
+                raise DownloadError(
+                    msg.ERR_BACKEND_MISSING.format(exe=self.exe_name)
+                )
+            self.exe = exe
 
     def staging_path(self, dest: Path) -> Path:
         raise NotImplementedError
@@ -146,7 +158,6 @@ class PythonBackend(TempFileBackend):
     name = "python"
     _done = 0
     _total = 0
-
     def run(self, url: str, work: Path, cookie: str | None) -> None:
         if work.exists():
             remove_path(work)
@@ -186,13 +197,7 @@ class PythonBackend(TempFileBackend):
 
 class CurlBackend(TempFileBackend):
     name = "curl"
-
-    def __init__(self, config: dict[str, Any], stop: threading.Event) -> None:
-        super().__init__(config, stop)
-        exe = tools.find_backend(self.name)
-        if not exe:
-            raise DownloadError(msg.ERR_CURL_MISSING)
-        self.exe = exe
+    exe_name = "curl.exe"
 
     def run(self, url: str, work: Path, cookie: str | None) -> None:
         if work.exists():
@@ -220,13 +225,7 @@ class CurlBackend(TempFileBackend):
 
 class WgetBackend(TempFileBackend):
     name = "wget"
-
-    def __init__(self, config: dict[str, Any], stop: threading.Event) -> None:
-        super().__init__(config, stop)
-        exe = tools.find_backend(self.name)
-        if not exe:
-            raise DownloadError(msg.ERR_WGET_MISSING)
-        self.exe = exe
+    exe_name = "wget.exe"
 
     def run(self, url: str, work: Path, cookie: str | None) -> None:
         if work.exists():
@@ -248,13 +247,10 @@ class WgetBackend(TempFileBackend):
 
 class Aria2Backend(DownloadBackend):
     name = "aria2"
+    exe_name = "aria2c.exe"
 
     def __init__(self, config: dict[str, Any], stop: threading.Event) -> None:
         super().__init__(config, stop)
-        exe = tools.find_backend(self.name)
-        if not exe:
-            raise DownloadError(msg.ERR_ARIA2_MISSING)
-        self.exe = exe
         self.segments = max(
             1,
             int(config.get("download", {}).get("concurrency", {}).get("segments", 5)),
@@ -395,6 +391,8 @@ def _download_one(
     cookie = _cookie_header(item.cookie)
     prefix = f"[{index}/{total}] "
     ensure_dir(item.path.parent)
+    backend: DownloadBackend | None = None
+    work: Path | None = None
 
     try:
         if cache_hit:
