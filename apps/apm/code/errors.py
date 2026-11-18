@@ -10,6 +10,10 @@ class BucketError(ApmError):
     pass
 
 
+class SelfUpdateError(ApmError):
+    pass
+
+
 class ManifestError(ApmError):
     pass
 

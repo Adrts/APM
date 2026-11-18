@@ -38,7 +38,7 @@ APM 是一个面向 Windows 的命令行包管理器，主语言为 Python。
 - 主语言：Python，最低支持 3.11（`shims\apm_setup.cmd` 按此校验），当前开发环境为 Python 3.14.10。
 - 解释器：直接复用系统已安装的 Python，不内置、不下载独立运行时。
 - 依赖：`shims\requirements.txt`，用户克隆后运行初始化脚本创建虚拟环境（`.venv`）并安装依赖。当前运行时只使用 Python 标准库，`requirements.txt` 暂无第三方依赖。
-- 分发方式：Git 仓库分发。用户把仓库克隆到任意目录即可使用，不需要安装程序；APM 自身升级在仓库目录执行 `git pull`。建议使用 `--depth 1` 浅克隆，`git pull` 不会加深历史。
+- 分发方式：Git 仓库分发。用户把仓库克隆到任意目录即可使用，不需要安装程序；APM 自身升级通过 `apm update` 完成（fetch + reset，见 13.3）。建议使用 `--depth 1` 浅克隆，更新不会加深历史。
 - 安装根目录记为 `<APM_ROOT>`，即仓库克隆目录，由启动器根据自身路径推导，不写死盘符，整份目录可移动。
 - 首次使用只需一步：运行 `shims\apm_setup.cmd`，自动完成虚拟环境创建、依赖安装、入口生成与用户 PATH 写入（幂等，可重复执行）。
 
@@ -433,7 +433,7 @@ apps\<app>\
 - 缓存键、哈希匹配和 `hash_for_url` 一律使用**原始 URL**；加速只影响实际传输地址，切换前缀不会导致缓存失效。
 - 不重复加前缀：URL 已经以配置的前缀开头时直接使用。
 - 镜像下载失败直接判定为本次下载失败，不回退原地址、不切换其他镜像或后端、不重试；取消配置即可恢复直连。
-- 镜像作用于软件下载与 bucket 的 git 克隆/更新（软件源仓库为 GitHub 地址时同样改写）；不作用于 APM 自身更新。
+- 镜像作用于软件下载、bucket 的 git 克隆/更新（软件源仓库为 GitHub 地址时同样改写）与 APM 本体更新（源地址硬编码，GitHub 地址时同样改写）。
 - 无内置默认前缀：`github` / `sourceforge` 留空即完全不启用镜像，需用户显式填写。
 - 不提供可用性探测：APM 不主动测速、不自动挑选或轮换前缀，配置什么就用什么。
 - 加速前缀属于第三方服务，由用户自行选择并承担可用性风险。
@@ -541,7 +541,7 @@ args = -X utf8 "D:\Workspace\APM\apps\apm\code\__main__.py"
 - 依赖清单为 `shims\requirements.txt`，版本全部固定；当前只依赖标准库，文件内容为空清单。
 - `shims\apm_setup.cmd` 的检测顺序为：PATH 中的 `python`（要求 ≥ 3.11）→ `py -3`（要求 ≥ 3.11）→ 报错；随后创建 `.venv`、升级 pip、安装 `requirements.txt` 中的依赖，接着生成 `shims\apm.exe` 与 `shims\apm.shim` 入口，最后在脚本内以一行 `python -c` 引导 apm 包并复用 `apm.env.add_path` 的同一套写入规则把 shims 目录前置到用户 PATH（幂等，已存在则跳过）。
 - 克隆后必须先执行一次 `shims\apm_setup.cmd`，之后启动器只使用 `.venv\Scripts\python.exe`。
-- `git pull` 更新自身后若依赖有变化，需重新执行 `shims\apm_setup.cmd`。
+- `apm update` 更新本体后依赖如有变化，需重新执行 `shims\apm_setup.cmd`（本体更新成功时输出该提示）。
 - 系统未安装 Python 或版本过低时，`shims\apm_setup.cmd` 直接报错并说明最低版本要求。
 
 ### 9.5 已知取舍
@@ -667,7 +667,7 @@ args = -X utf8 "D:\Workspace\APM\apps\apm\code\__main__.py"
 - 命令前缀由 `scoop` 改为 `apm`，子命令与参数尽量保持同名，降低迁移成本。
 - 所有命令只作用于用户级，不提供 `-g` / `--global`。
 - `install`、`update`、`download` 共用第 6 节的两阶段模型。
-- APM 自身不提供自更新命令，升级方式是在仓库目录执行 `git pull`。
+- APM 自身更新内置于 `apm update` / `apm update *`，本体源硬编码为 `SELF_REPO_URL`（`https://github.com/Adrts/APM.git`）。
 
 ### 12.2 命令对照表
 
@@ -675,8 +675,8 @@ args = -X utf8 "D:\Workspace\APM\apps\apm\code\__main__.py"
 | --- | --- | --- | --- |
 | `scoop install <app>` | 安装应用 | `apm install <app...> [-v] [-y]` | 支持一次多个与通配符模糊匹配（`open*`）；移除 `-g`；走两阶段；`--verbose` 显示步骤明细；`--yes` 跳过二次确认 |
 | `scoop uninstall <app>` | 卸载应用 | `apm uninstall <app...> [--purge] [-v] [-y]` 或 `apm uninstall --all` | 支持一次多个与通配符模糊匹配；`*` 单独出现等价于 `--all`（卸载全部）；默认保留 `persist`；`--purge` 同时删除 persist 数据；`--verbose` 显示步骤明细；`--yes` 跳过二次确认 |
-| `scoop update` | 更新 Scoop 与 bucket | `apm update` | 仅刷新 bucket 索引，不更新 APM 自身 |
-| `scoop update <app>` / `*` | 更新应用 | `apm update <app>` / `--all` | 保留；移除 `-g`。`--all`（或参数级别名 `*`）先刷新全部 bucket 再更新全部应用；指定应用时不刷新 bucket；`--verbose` 显示步骤明细；`--yes` 跳过二次确认 |
+| `scoop update` | 更新 Scoop 与 bucket | `apm update` | 刷新全部 bucket 索引并更新 APM 本体（源地址硬编码 `SELF_REPO_URL`，走镜像加速）；本体更新有事务表与二次确认，`--yes` 跳过 |
+| `scoop update <app>` / `*` | 更新应用 | `apm update <app>` / `--all` | 保留；移除 `-g`。`--all`（或参数级别名 `*`）先刷新全部 bucket，再更新 APM 本体，最后更新全部应用；指定应用时只更新应用，不刷新 bucket 与本体；`--verbose` 显示步骤明细；`--yes` 跳过二次确认 |
 | `scoop status` | 检查可更新版本 | `apm status` | 保留；已锁定（hold）的应用跳过 |
 | `scoop hold <app>` / `unhold <app>` | 锁定/解除锁定版本 | `apm hold <app...>` / `apm unhold <app...>` | 保留；锁定信息存于安装元数据 `hold` 字段，update/status 跳过已锁定应用 |
 | `scoop list [query]` | 列出已安装 | `apm list [query]` | 保留；新增 `--all` 列出全部（与不带 query 等价） |
@@ -696,7 +696,7 @@ args = -X utf8 "D:\Workspace\APM\apps\apm\code\__main__.py"
 - 不再有 `reset` 与多版本并存；`cleanup` 只清理残留目录与临时文件，不负责版本切换。
 - 不支持安装历史版本，`app@version` 只接受与 bucket 当前版本一致的版本号。
 - 不自带 shim 编译工具链；命令入口统一为根目录 `shims\` 下生成的入口文件（含 APM 自身入口）：`.exe/.com` 目标为 vendored shim 副本 + `.shim` 旁车，其余目标为 `.cmd` 文本包装；另有各应用 `env_add_path` 写入的目录。
-- `update` 不更新 APM 自身，自身升级由 `git pull` 完成。
+- `update` 分三个阶段：bucket 索引刷新、本体更新（事务表 + 二次确认）、软件包更新；指定 app 参数时只执行软件包更新。
 - 不提供 `scoop alias` 式的用户自定义别名机制；仅内置固定短别名（见 12.6），不支持用户自定义。
 
 ### 12.4 首批实现范围
@@ -785,6 +785,7 @@ args = -X utf8 "D:\Workspace\APM\apps\apm\code\__main__.py"
 - 下载软件包：输出 `下载软件包：` 标题，随后进入下载进度条块。进度条在下载开始前按编号顺序**预分配**（等待并发槽位的条静止占位，显示 `--`），因此块内顺序始终与 `[i/N]` 编号一致，不受完成先后影响。每条为 DNF 风格 `[1/3] 文件名（镜像）  45% [========          ]  2.1 MB/s |  20.3 MB | 00m12s`（名称列宽随终端自适应；走镜像的下载项在文件名后追加 `（镜像）` 标记，TTY 下不再输出独立的镜像提示状态行）。python 后端实时推进字节与速度；curl / wget / aria2 后端拿不到字节级进度，统一用 `<=>` 弹跳模拟动画（dnf5 的 indeterminate 形态），完成时定格为真实文件大小与用时。多条下载共享一个块并发重绘；全部结束后块定格收口。缓存命中的条从块中移除并输出 `[i/N] 使用缓存 ...` 状态行。非 TTY 或窄终端下回退为 `[i/N]` 编号状态行（`下载`、`下载 ...（镜像）`、`使用缓存`、`已下载`）。
 - 执行事务：输出 `执行事务：` 标题，随后每个应用一条步骤进度条（参照 DNF5 的 RPM 事务条）：`[i/N] 安装 <应用> <版本>`（更新为 `[i/N] 更新 <应用>：旧 -> 新`，卸载为 `[i/N] 卸载 <应用> <版本>`），编号前置与下载行 `[i/N]` 形式一致、不带程序名前缀，运行中显示弹跳动画与用时；步骤内的解压、创建/覆盖命令入口等明细行默认隐藏，仅 `--verbose`（install / uninstall / update）时就地显示在进度条下方（超过 8 条滚动）；步骤运行期间的警告（旧版本目录删除失败、快捷方式异常等）与消息一样就地显示在所属进度条下方并随后定格，无进度条时（非 TTY / 窄终端）仍输出到 stderr；步骤完成后定格为 `100% [========================] 用时`（安装附实际磁盘占用，卸载附释放空间），verbose 明细固化为历史行；manifest 的 `notes` 在该步骤进度条定格之后立即显示（`说明` 标题 + 分隔线 + 正文），紧跟对应安装行下方；失败定格行红色。非 TTY 下回退为普通步骤状态行（明细同样仅 `--verbose` 时输出）。
 - 最终清单：全部成功后输出空行 + 无前缀的最终清单（`已安装：` / `已卸载：` 每行仅 `  应用`，不展示版本号），最后输出绿色 `完成！`；存在失败时输出失败清单、不输出 `完成！`，部分成功时仍列出已完成的清单。
+- 本体更新：`update`（含 `*`）在 bucket 刷新后执行本体阶段，源地址硬编码为 `SELF_REPO_URL`（`https://github.com/Adrts/APM.git`），不依赖本地 remote 配置。fetch 复用 bucket 的 `git_fetch` 序列与 `url.insteadOf` 镜像改写；无更新时输出 `apm 已是最新（短哈希）`；有更新时输出 `更新本体：` 事务表（版本列显示 commit 短哈希 `old -> new`，软件源列显示硬编码地址）+ `事务摘要： 更新本体：1 个` + 二次确认，确认拒绝时 `已取消`、退出码 1（`apm update *` 不再进入软件包阶段）；确认后 `reset --hard FETCH_HEAD`（与 bucket 一致，工作区未提交改动会被覆盖），成功后输出已更新行与依赖提示（依赖如有变化需重跑 `shims\apm_setup.cmd`）。
 - 二次确认（参照 DNF 的 `Is this ok [y/N]:`）：install / uninstall / update 在事务表与事务摘要之后、阶段一开始之前输出 `是否继续执行事务？[y/N]`；`y` / `yes` / `是` 继续执行，回车或其他输入取消（`已取消`，退出码 1）；`--yes` / `-y` 跳过确认；`download` 只下载不确认；stdin 不可读（EOF）时视为取消。
 - 参数通配符：install / uninstall / list / search 的 app 参数支持 glob 通配符（`*`、`?`、`[seq]`，大小写不敏感；分段规则与普通 spec 一致，不经过字符清洗）。install / uninstall 在解析前把通配符展开为清单（install）或已安装清单（uninstall）中的全部匹配应用名，无匹配时按失败处理；`*` 单独出现等价于 `--all`（仅 uninstall 提供 `--all`，卸载全部已安装应用）；list / search 无通配符时保持子串匹配。
 - 事务显示分节与清单标题（`安装：`、`下载软件包：`、`执行事务：`、`已安装：` 等）为无前缀普通行，不加青色小节样式，与 DNF 的纯文本分节一致；进度条块激活期间这些标题会先擦除块再输出，随后块在下方恢复。
@@ -879,11 +880,11 @@ flowchart TD
     L --> M
 ```
 
-### 13.3 bucket 刷新
+### 13.3 bucket 刷新与本体更新
 
 ```mermaid
 flowchart TD
-    A["apm update 或 apm update --all（* 等价）"] --> B["枚举目标 bucket"]
+    A["apm update / apm update --all（* 等价）"] --> B["枚举目标 bucket"]
     B --> B0{"找到 git 程序入口：shims → PATH"}
     B0 -->|"否"| F["保留旧索引，记录失败，继续下一个"]
     B0 -->|"是"| C["git -c url.<改写>.insteadOf=<origin> fetch --depth 1 --no-tags origin"]
@@ -893,6 +894,15 @@ flowchart TD
     E --> G["记录成功"]
     F --> G
     G --> H["汇总结果并输出"]
+    H --> I{"本体：.git 是否存在"}
+    I -->|"否"| IERR["报错：APM 本体不是 git 仓库"]
+    I -->|"是"| J["rev-parse HEAD；fetch SELF_REPO_URL（镜像改写）"]
+    J --> K{"FETCH_HEAD == HEAD？"}
+    K -->|"是"| L["输出：apm 已是最新"]
+    K -->|"否"| M["更新本体事务表 + 事务摘要 + 二次确认"]
+    M -->|"拒绝"| N["已取消，整体退出码 1"]
+    M -->|"确认"| O["git reset --hard FETCH_HEAD"]
+    O --> P["输出已更新与依赖提示"]
 ```
 
 浅克隆约束：
@@ -902,6 +912,7 @@ flowchart TD
 - 更新采用 `fetch + reset --hard FETCH_HEAD`，不做 merge，避免 bucket 强制推送时 `--ff-only` 失败。
 - fetch 失败时保留旧索引，本次更新标记失败，不影响已安装软件。
 - origin 始终记录原始仓库地址，镜像改写仅通过 `git -c url.insteadOf` 在传输时生效；缺少 remote origin 时更新直接报错。
+- 本体更新共用同一 `git_fetch` / `git_reset` 序列与镜像改写；按 fetch 目标直接使用硬编码的 `SELF_REPO_URL`，不读取 remote 配置。
 
 ### 13.4 安装（两阶段）
 

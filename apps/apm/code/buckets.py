@@ -187,6 +187,39 @@ def remove_bucket(name: str) -> None:
     console.success(msg.MSG_BUCKET_REMOVED.format(name=name))
 
 
+def git_fetch(git: Path, root: Path, target: str, url: str) -> str | None:
+    """bucket 与本体更新共用的浅 fetch；失败返回错误详情，成功返回 None。
+
+    传输时镜像改写（url.insteadOf），仓库记录的地址始终为原始地址；
+    未配置镜像时为恒等改写，命令形状保持一致。
+    """
+    fetch = run(
+        [
+            str(git),
+            "-C",
+            str(root),
+            "-c",
+            f"url.{transport_url(url, config.load())}.insteadOf={url}",
+            "fetch",
+            "--depth",
+            "1",
+            "--no-tags",
+            target,
+        ]
+    )
+    if fetch.returncode != 0:
+        return (fetch.stderr or fetch.stdout).strip() or msg.ERR_GIT_FETCH
+    return None
+
+
+def git_reset(git: Path, root: Path) -> str | None:
+    """reset --hard FETCH_HEAD；失败返回错误详情，成功返回 None。"""
+    reset = run([str(git), "-C", str(root), "reset", "--hard", "FETCH_HEAD"])
+    if reset.returncode != 0:
+        return (reset.stderr or reset.stdout).strip() or msg.ERR_GIT_RESET
+    return None
+
+
 def update_bucket(name: str) -> None:
     root = bucket_root(name)
     if not root.exists():
@@ -202,31 +235,12 @@ def update_bucket(name: str) -> None:
     if origin.returncode != 0 or not origin.stdout.strip():
         raise BucketError(msg.ERR_BUCKET_ORIGIN_MISSING.format(name=name))
     remote = origin.stdout.strip()
-    fetch = run(
-        [
-            str(git),
-            "-C",
-            str(root),
-            # 传输时镜像改写（url.insteadOf），origin 始终记录原始地址；
-            # 未配置镜像时为恒等改写，命令形状保持一致。
-            "-c",
-            f"url.{transport_url(remote, config.load())}.insteadOf={remote}",
-            "fetch",
-            "--depth",
-            "1",
-            "--no-tags",
-            "origin",
-        ]
-    )
-    if fetch.returncode != 0:
-        raise BucketError(
-            (fetch.stderr or fetch.stdout).strip() or msg.ERR_GIT_FETCH
-        )
-    reset = run([str(git), "-C", str(root), "reset", "--hard", "FETCH_HEAD"])
-    if reset.returncode != 0:
-        raise BucketError(
-            (reset.stderr or reset.stdout).strip() or msg.ERR_GIT_RESET
-        )
+    detail = git_fetch(git, root, "origin", remote)
+    if detail:
+        raise BucketError(detail)
+    detail = git_reset(git, root)
+    if detail:
+        raise BucketError(detail)
 
 
 def update_buckets(name: str | None = None) -> list[str]:

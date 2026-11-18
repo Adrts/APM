@@ -6,7 +6,7 @@ import argparse
 import sys
 
 from . import __version__, buckets, cache, config, install, installed, manifest
-from . import messages as msg, query, uninstall
+from . import messages as msg, query, selfupdate, uninstall
 from .errors import ApmError
 from .known_buckets import KNOWN_BUCKETS
 from .output import console
@@ -373,12 +373,16 @@ def _update(targets: list[str], all_apps: bool = False, assume_yes: bool = False
         if failures:
             console.failure_list(failures)
             return 1
+        if selfupdate.run_self_update(assume_yes):
+            return 1
         console.success(msg.MSG_BUCKET_INDEX_UPDATED)
         return 0
     if all_apps:
         bucket_failures = buckets.update_buckets()
         if bucket_failures:
             console.warn(msg.MSG_BUCKET_PARTIAL_FAILED)
+        if selfupdate.run_self_update(assume_yes):
+            return 1
         result = install.update_apps([], assume_yes=assume_yes)
         return 1 if bucket_failures else result
     return install.update_apps(targets, assume_yes=assume_yes)
