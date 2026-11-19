@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from . import messages as msg, paths, tools
+from . import config, messages as msg, paths, tools
 from .errors import InstallError, ToolError
 from .output import console
 from .util import split_windows_args
@@ -46,6 +46,22 @@ function appdir($app, $global = $false) {
     if ($global) { throw 'APM 仅支持用户级安装，appdir 不支持 -Global' }
     if ($app -eq 'scoop' -or $app -eq 'apm') { return $scoopdir }
     return Join-Path $scoopdir "apps\$app"
+}
+
+function Expand-7zipArchive {
+    param(
+        [Parameter(Mandatory = $true, Position = 0)] [string]$Path,
+        [Parameter(Mandatory = $true, Position = 1)] [string]$DestinationPath,
+        [switch]$RemoveArchive
+    )
+    if (-not $internal_seven_zip) {
+        throw '未检测到 7z.exe，无法执行 Expand-7zipArchive（可在 config.json 的 extract.seven_zip 显式配置）'
+    }
+    & $internal_seven_zip x $Path "-o$DestinationPath" -y -bso0 -bsp0
+    if ($LASTEXITCODE -ne 0) {
+        throw "Expand-7zipArchive 解压失败（退出码 $LASTEXITCODE）：$Path"
+    }
+    if ($RemoveArchive) { Remove-Item -LiteralPath $Path -Force }
 }
 
 function versiondir($app, $version, $global = $false) {
@@ -160,8 +176,13 @@ def run_script(script: str, cwd: Path | None = None) -> subprocess.CompletedProc
     temp_dir = Path(tempfile.mkdtemp(prefix="apm-ps-"))
     script_path = temp_dir / "script.ps1"
     try:
+        # $ErrorActionPreference = 'Stop'：cmdlet 报错即终止（退出码非 0），
+        # 避免 Scoop helper 缺失等异常被 Continue 吞掉后安装出隐形残缺应用。
         script_path.write_text(
-            HELPER_FUNCTIONS + "\r\n" + script,
+            "$ErrorActionPreference = 'Stop'\r\n"
+            + HELPER_FUNCTIONS
+            + "\r\n"
+            + script,
             encoding="utf-8-sig",
             newline="\r\n",
         )
@@ -196,6 +217,9 @@ def _prelude(context: dict[str, Any]) -> list[str]:
         fname_expr = "@(" + ", ".join(_quote(item) for item in fname) + ")"
     else:
         fname_expr = _quote(fname)
+    # Expand-7zipArchive 按同一查找顺序（显式配置 → shims → PATH）解析 7z，
+    # 与解压模块共用同一工具；未找到时注入空串，函数被调用时显式报错。
+    seven_zip = tools.find_7z(config.load())
     return [
         f"$app = {_quote(context['app'])}",
         f"$version = {_quote(context['version'])}",
@@ -210,6 +234,7 @@ def _prelude(context: dict[str, Any]) -> list[str]:
         f"$bucketsdir = {_quote(paths.BUCKETS_DIR)}",
         f"$cachedir = {_quote(paths.CACHE_DIR)}",
         f"$scoopdir = {_quote(paths.ROOT)}",
+        f"$internal_seven_zip = {_quote(str(seven_zip) if seven_zip else '')}",
         f"$manifest = Get-Content -LiteralPath {_quote(context['manifest_path'])} -Raw -Encoding UTF8 | ConvertFrom-Json",
     ]
 
