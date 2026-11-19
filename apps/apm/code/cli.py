@@ -368,20 +368,20 @@ def _set_hold(apps: list[str], hold: bool) -> int:
 
 
 def _update(targets: list[str], all_apps: bool = False, assume_yes: bool = False) -> int:
-    # bucket 刷新与本体更新两阶段对 update 与 update --all 结构一致：
-    # bucket 失败仅记录并继续（保留旧索引），本体阶段照常执行。
-    if all_apps or not targets:
+    # update 无参数只更新本体，不刷新 bucket 索引：单独刷源对用户没有实际用途，
+    # 只有随后的软件包更新才会消费新索引。
+    # --all 依次执行 bucket 刷新 → 本体更新 → 软件包更新；bucket 失败仅记录并继续
+    # （保留旧索引），本体与软件包阶段照常执行。
+    if all_apps:
         failures = buckets.update_buckets()
         if failures:
             console.failure_list(failures)
         if selfupdate.run_self_update(assume_yes):
             return 1
-        if all_apps:
-            result = install.update_apps([], assume_yes=assume_yes)
-        else:
-            console.success(msg.MSG_BUCKET_INDEX_UPDATED)
-            result = 0
+        result = install.update_apps([], assume_yes=assume_yes)
         return 1 if failures else result
+    if not targets:
+        return 1 if selfupdate.run_self_update(assume_yes) else 0
     return install.update_apps(targets, assume_yes=assume_yes)
 
 
