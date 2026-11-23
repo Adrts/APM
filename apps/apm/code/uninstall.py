@@ -90,7 +90,7 @@ def uninstall_apps(
         )
         if not assume_yes:
             if not console.confirm(msg.MSG_CONFIRM):
-                console.info(msg.MSG_CANCELED)
+                console.error(msg.MSG_CANCELED)
                 return 1
         console.plain(msg.SECTION_TRANSACTION)
         total = len(targets)

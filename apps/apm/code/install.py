@@ -101,7 +101,7 @@ def install_apps(
     console.plain(msg.SECTION_DOWNLOAD)
     if mode != "download" and not assume_yes:
         if not console.confirm(msg.MSG_CONFIRM):
-            console.info(msg.MSG_CANCELED)
+            console.error(msg.MSG_CANCELED)
             return 1
     results = download.download_all(items, cfg)
     failures = [result for result in results if not result.ok]

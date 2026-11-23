@@ -106,7 +106,7 @@ def run_self_update(assume_yes: bool) -> bool:
     console.plain(msg.MSG_TRANS_SUMMARY_SELF.format(count=1))
     console.plain()
     if not assume_yes and not console.confirm(msg.MSG_CONFIRM):
-        console.info(msg.MSG_CANCELED)
+        console.error(msg.MSG_CANCELED)
         return True
     git = _git(root)
     detail = git_reset(git, root)
