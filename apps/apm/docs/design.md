@@ -626,8 +626,10 @@ args = -X utf8 "D:\Workspace\APM\apps\apm\code\__main__.py"
 - 钩子（安装/卸载的四个钩子与 installer / uninstaller 的 script 分支）与 installer / uninstaller 可执行分支共用同一上下文字典与同一 PowerShell 变量前置段（`ps._prelude`）：键名统一为 `app`、`version`、`bucket`、`directory`、`original_dir`、`persist_dir`、`architecture`、`fname`、`manifest_path`、`cmd`；`$fname` 在钩子上下文中为安装包文件名列表，在可执行分支中为实际执行的安装器文件名（字符串）。
 - `$dir` 默认指向 `current` 联接路径，`$original_dir` 始终指向真实版本目录。例外：`pre_install` 与 `installer` 执行时 `current` 尚未切换，`$dir` 与 `$original_dir` 都指向新版本目录；`post_install` 与卸载钩子执行时 `$dir` 已指向 `current`。
 - 脚本上下文额外注入 Scoop 同名 helper：`Add-Path` / `Remove-Path`（PowerShell 实现，语义对齐 11.3：只写 `HKCU\Environment\Path`、保留原值类型、去重前置/移除、广播 `WM_SETTINGCHANGE`）；`-Global` 与非 `PATH` 目标变量显式报错。
-- 同时注入 Scoop 同名解压 helper `Expand-7zipArchive`（签名与 Scoop 一致：`Path`、`DestinationPath` 两个位置参数与 `-RemoveArchive` 开关），内部调用按「显式配置 → shims → PATH」解析出的 7z（与解压模块共用 `extract.seven_zip` 配置与查找顺序），退出码非 0 时抛错；未检测到 7z 时调用该函数显式报错。
-- 内联 PowerShell 统一以 `$ErrorActionPreference = 'Stop'` 执行：cmdlet 报错即终止、退出码非 0，钩子失败按安装失败处理（版本目录整体移除），杜绝 Scoop helper 缺失等异常被默认 `Continue` 吞掉后装出隐形残缺应用（未提供 `Expand-DarkArchive`、`Expand-MsiArchive` 等其余 Scoop 内部函数，manifest 使用时钩子会显式失败）。
+- 同时注入 Scoop 通用 helper：`ensure`、`info`、`warn`、`error`、`abort`、`Invoke-ExternalCommand`（含 `Path` / `Args` / `Msg` / `cec` / `Log` 别名），语义对齐 Scoop 的 `lib/core.ps1`；不提供 `Get-EnvVar` / `Set-EnvVar` / `shim` / `scoop` 等与 APM 自身实现重叠或依赖 Scoop 全局状态的 helper。
+- 同时注入 Scoop 同名解压 helper `Expand-7zipArchive`（`Path`、`DestinationPath`、`-ExtractDir`、`-Switches`、`-Overwrite`、`-Removal`，`-RemoveArchive` 为兼容别名），内部调用按「显式配置 → shims → PATH」解析出的 7z（与解压模块共用 `extract.seven_zip` 配置与查找顺序），退出码非 0 时抛错；未检测到 7z 时调用该函数显式报错。
+- 内联 PowerShell 统一以 `$ErrorActionPreference = 'Stop'` 执行：cmdlet 报错即终止、退出码非 0，钩子失败按安装失败处理（版本目录整体移除），杜绝 Scoop helper 缺失等异常被默认 `Continue` 吞掉后装出隐形残缺应用（未提供 `Expand-DarkArchive`、`Expand-MsiArchive`、`Expand-InnoArchive`、`Expand-ZipArchive` 等其余 Scoop 内部函数，manifest 使用时钩子会显式失败）。
+- 内联脚本开头强制 `[Console]::OutputEncoding` 为无 BOM UTF-8：Windows PowerShell 5.1 重定向输出默认用系统 ANSI 代码页（中文系统 GBK），而 APM 按 UTF-8 解码，否则 helper 报错详情会显示为乱码。
 - 同时注入 Scoop 路径 helper：`appdir`、`versiondir`、`currentdir`、`persistdir`，供 `post_install` 等脚本使用；APM 不支持全局安装，传入 `$global = $true` 时显式报错。
 
 ### 10.6 支持范围

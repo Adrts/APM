@@ -29,7 +29,88 @@ def _quote(value: Any) -> str:
 # 注入到所有内联 PowerShell 脚本的同名 helper（Add-Path / Remove-Path）。
 # 语义对齐 design.md 11.3：只写 HKCU\Environment\Path，保留原值类型，
 # 去重规则忽略大小写、首尾引号与末尾反斜杠，新增前置，写回后广播 WM_SETTINGCHANGE。
+# Scoop 源里的 manifest 脚本会直接调用 Scoop 自带 helper；这里补齐 APM 支持的同名函数，
+# 避免 $ErrorActionPreference = 'Stop' 下因 CommandNotFoundException 中断钩子。
 HELPER_FUNCTIONS = r"""
+# 消息 helper：与 Scoop lib/core.ps1 同名同行为（仅写宿主，不抛错）。
+function abort($msg, [int]$exit_code = 1) { Write-Host $msg -ForegroundColor Red; exit $exit_code }
+function error($msg) { Write-Host "ERROR $msg" -ForegroundColor DarkRed }
+function warn($msg) { Write-Host "WARN  $msg" -ForegroundColor DarkYellow }
+function info($msg) { Write-Host "INFO  $msg" -ForegroundColor DarkGray }
+
+# 目录 helper：Scoop 的 ensure 返回 Convert-Path 结果，供调用方继续拼接路径。
+function ensure($dir) {
+    if (!(Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    Convert-Path -LiteralPath $dir
+}
+
+# 外部命令 helper：对齐 Scoop 的 Invoke-ExternalCommand（含 Path/Args/Msg/cec/Log 别名）。
+# 与 Scoop 一致返回 $true/$false，非零退出由调用方决定是否 abort。
+function Invoke-ExternalCommand {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [Alias('Path')]
+        [string]$FilePath,
+        [Parameter(Position = 1)]
+        [Alias('Args')]
+        [string[]]$ArgumentList = @(),
+        [switch]$RunAs,
+        [switch]$Quiet,
+        [Alias('Msg')]
+        [string]$Activity,
+        [Alias('cec')]
+        [hashtable]$ContinueExitCodes,
+        [Alias('Log')]
+        [string]$LogPath
+    )
+    if ($Activity) { Write-Host "$Activity " -NoNewline }
+    $callArgs = @($ArgumentList | Where-Object { $null -ne $_ })
+    $code = 0
+    try {
+        if ($RunAs -or $Quiet) {
+            $startArgs = @{ FilePath = $FilePath; ArgumentList = $callArgs; Wait = $true; PassThru = $true }
+            if ($Quiet) { $startArgs['WindowStyle'] = 'Hidden' }
+            if ($RunAs) { $startArgs['Verb'] = 'RunAs' }
+            $code = (Start-Process @startArgs).ExitCode
+        } else {
+            & $FilePath @callArgs
+            $code = $LASTEXITCODE
+        }
+    } catch {
+        if ($Activity) { Write-Host 'Error.' -ForegroundColor DarkRed }
+        error "无法执行 $FilePath：$($_.Exception.Message)"
+        return $false
+    }
+    if ($code -ne 0) {
+        if ($ContinueExitCodes -and $ContinueExitCodes.ContainsKey($code)) {
+            if ($Activity) { Write-Host 'Done.' -ForegroundColor DarkYellow }
+            warn $ContinueExitCodes[$code]
+            return $true
+        }
+        if ($Activity) { Write-Host 'Error.' -ForegroundColor DarkRed }
+        error "Exit code was $code!"
+        return $false
+    }
+    if ($Activity) { Write-Host 'Done.' -ForegroundColor Green }
+    return $true
+}
+
+# ExtractDir 解压后把子目录内容搬到目标根，按 Scoop movedir 的语义合并。
+function Apm-MoveDirContents([string]$From, [string]$To) {
+    if (!(Test-Path -LiteralPath $From -PathType Container)) { return }
+    ensure $To | Out-Null
+    Get-ChildItem -LiteralPath $From -Force | ForEach-Object {
+        $dest = Join-Path $To $_.Name
+        if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
+        Move-Item -LiteralPath $_.FullName -Destination $dest -Force
+    }
+    Remove-Item -LiteralPath $From -Recurse -Force
+}
+
 function ApmNormalizePath([string]$Value) {
     return ($Value.Trim().Trim('"').TrimEnd('\')).ToLowerInvariant()
 }
@@ -51,17 +132,36 @@ function appdir($app, $global = $false) {
 function Expand-7zipArchive {
     param(
         [Parameter(Mandatory = $true, Position = 0)] [string]$Path,
-        [Parameter(Mandatory = $true, Position = 1)] [string]$DestinationPath,
-        [switch]$RemoveArchive
+        [Parameter(Position = 1)] [string]$DestinationPath = (Split-Path $Path),
+        [string]$ExtractDir,
+        [Parameter(ValueFromRemainingArguments = $true)] [string]$Switches,
+        [ValidateSet('All', 'Skip', 'Rename')] [string]$Overwrite,
+        [Alias('RemoveArchive')] [switch]$Removal
     )
     if (-not $internal_seven_zip) {
         throw '未检测到 7z.exe，无法执行 Expand-7zipArchive（可在 config.json 的 extract.seven_zip 显式配置）'
     }
-    & $internal_seven_zip x $Path "-o$DestinationPath" -y -bso0 -bsp0
+    $DestinationPath = $DestinationPath.TrimEnd('\')
+    $argList = @('x', $Path, "-o$DestinationPath", '-xr!*.nsis', '-y', '-bso0', '-bsp0')
+    if ($ExtractDir) { $argList += "-ir!$ExtractDir\*" }
+    if ($Switches) { $argList += (-split $Switches) }
+    switch ($Overwrite) {
+        'All' { $argList += '-aoa' }
+        'Skip' { $argList += '-aos' }
+        'Rename' { $argList += '-aou' }
+    }
+    & $internal_seven_zip @argList
     if ($LASTEXITCODE -ne 0) {
         throw "Expand-7zipArchive 解压失败（退出码 $LASTEXITCODE）：$Path"
     }
-    if ($RemoveArchive) { Remove-Item -LiteralPath $Path -Force }
+    if ($ExtractDir) {
+        Apm-MoveDirContents "$DestinationPath\$ExtractDir" $DestinationPath
+        $extractTop = "$DestinationPath\$($ExtractDir -replace '[\\/].*', '')"
+        if ((Test-Path -LiteralPath $extractTop -PathType Container) -and !(Get-ChildItem -LiteralPath $extractTop -Force)) {
+            Remove-Item -LiteralPath $extractTop -Recurse -Force
+        }
+    }
+    if ($Removal) { Remove-Item -LiteralPath $Path -Force }
 }
 
 function versiondir($app, $version, $global = $false) {
@@ -176,9 +276,12 @@ def run_script(script: str, cwd: Path | None = None) -> subprocess.CompletedProc
     temp_dir = Path(tempfile.mkdtemp(prefix="apm-ps-"))
     script_path = temp_dir / "script.ps1"
     try:
+        # PowerShell 5.1 重定向输出默认使用系统 ANSI 代码页（中文系统为 GBK），
+        # 而下方按 UTF-8 解码；先强制子进程以 UTF-8 写出，避免中文报错变乱码。
         # $ErrorActionPreference = 'Stop'：cmdlet 报错即终止（退出码非 0），
         # 避免 Scoop helper 缺失等异常被 Continue 吞掉后安装出隐形残缺应用。
         script_path.write_text(
+            "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\r\n"
             "$ErrorActionPreference = 'Stop'\r\n"
             + HELPER_FUNCTIONS
             + "\r\n"

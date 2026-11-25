@@ -1,4 +1,3 @@
-.venv/
 apps/*
 !apps/此文件夹用来安装软件
 !apps/apm/
@@ -12,5 +11,6 @@ shims/*
 !shims/此文件夹用来放软件入口
 !shims/apm_setup.cmd
 !shims/requirements.txt
+AGENTS.md
 __pycache__/
 *.py[cod]
