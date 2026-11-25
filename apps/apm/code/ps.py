@@ -278,11 +278,19 @@ def run_script(script: str, cwd: Path | None = None) -> subprocess.CompletedProc
     try:
         # PowerShell 5.1 重定向输出默认使用系统 ANSI 代码页（中文系统为 GBK），
         # 而下方按 UTF-8 解码；先强制子进程以 UTF-8 写出，避免中文报错变乱码。
+        # PowerShell 5.1 中原生命令重定向 stderr（如 Scoop 清单常见的 `*>$null`）会被
+        # 包装成 NativeCommandError；即使退出码为 0，在 EAP=Stop 下也会终止脚本。
+        # Scoop 自身不设置 EAP=Stop，因此这类写法在其上正常。这里只放行这一种错误，
+        # 其余错误仍按 fail-loud 终止。
         # $ErrorActionPreference = 'Stop'：cmdlet 报错即终止（退出码非 0），
         # 避免 Scoop helper 缺失等异常被 Continue 吞掉后安装出隐形残缺应用。
         script_path.write_text(
             "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\r\n"
             "$ErrorActionPreference = 'Stop'\r\n"
+            "trap {\r\n"
+            "    if ($_.FullyQualifiedErrorId -eq 'NativeCommandError') { continue }\r\n"
+            "    throw $_\r\n"
+            "}\r\n"
             + HELPER_FUNCTIONS
             + "\r\n"
             + script,
