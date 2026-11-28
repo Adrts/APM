@@ -375,9 +375,11 @@ def _update(targets: list[str], all_apps: bool = False, assume_yes: bool = False
     # 是最新索引；bucket 失败仅记录并继续（保留旧索引），软件包阶段照常执行。
     if all_apps:
         # “已是最新”行统一列宽：本体与全部已装应用按最宽名字对齐。
+        # 必须把宽度放进列表再取 max：无第三方应用时生成器为空，
+        # max(单个 int) 会把 int 当可迭代对象而抛 TypeError。
         app_width = max(
-            display_width(selfupdate.SELF_APP_NAME),
-            *(display_width(item.app) for item in installed.installed_apps()),
+            [display_width(selfupdate.SELF_APP_NAME)]
+            + [display_width(item.app) for item in installed.installed_apps()]
         )
         failures = buckets.update_buckets()
         if failures:
