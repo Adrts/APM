@@ -679,7 +679,7 @@ args = -X utf8 "D:\Workspace\APM\apps\apm\code\__main__.py"
 - 所有命令只作用于用户级，不提供 `-g` / `--global`。
 - `install`、`update`、`download` 共用第 6 节的两阶段模型。
 - APM 自身更新内置于 `apm update` / `apm update *`，本体源硬编码为 `SELF_REPO_URL`（`https://github.com/Adrts/APM.git`）；本地未纳入 git 管理时自动 init 并浅拉取（见 13.3）。
-- `apm update` 不带参数时只更新本体，不刷新 bucket 索引：单独刷新索引没有实际用途，只有随后的软件包更新才会消费新索引。bucket 索引刷新只作为 `apm update --all` 的第一阶段执行。
+- `apm update` 不带参数时只更新本体，不刷新 bucket 索引：单独刷新索引没有实际用途，只有随后的软件包更新才会消费新索引。bucket 索引刷新作为 `apm update --all` 与 `apm update <app...>` 的第一阶段执行（前者随后还更新本体，后者直接进入指定应用的软件包更新）。
 
 ### 12.2 命令对照表
 
@@ -688,7 +688,7 @@ args = -X utf8 "D:\Workspace\APM\apps\apm\code\__main__.py"
 | `scoop install <app>` | 安装应用 | `apm install <app...> [-v] [-y]` | 支持一次多个与通配符模糊匹配（`open*`）；移除 `-g`；走两阶段；`--verbose` 显示步骤明细；`--yes` 跳过二次确认 |
 | `scoop uninstall <app>` | 卸载应用 | `apm uninstall <app...> [--purge] [-v] [-y]` 或 `apm uninstall --all` | 支持一次多个与通配符模糊匹配；`*` 单独出现等价于 `--all`（卸载全部）；默认保留 `persist`；`--purge` 同时删除 persist 数据；`--verbose` 显示步骤明细；`--yes` 跳过二次确认 |
 | `scoop update` | 更新 Scoop 与 bucket | `apm update` | 职责裁剪为只更新 APM 本体（先比较提交哈希；本地未纳入 git 管理时自动 init 并以深度 1 浅拉取，见 13.3），不刷新 bucket 索引；本体更新有事务表与二次确认，`--yes` 跳过 |
-| `scoop update <app>` / `*` | 更新应用 | `apm update <app>` / `--all` | 保留；移除 `-g`。`--all`（或参数级别名 `*`）先刷新全部 bucket，再更新 APM 本体，最后更新全部应用；指定应用时只更新应用，不刷新 bucket 与本体；`--verbose` 显示步骤明细；`--yes` 跳过二次确认 |
+| `scoop update <app>` / `*` | 更新应用 | `apm update <app>` / `--all` | 保留；移除 `-g`。`--all`（或参数级别名 `*`）先刷新全部 bucket，再更新 APM 本体，最后更新全部应用；指定应用时同样先刷新全部 bucket，再检查并更新指定应用，但不更新本体；`--verbose` 显示步骤明细；`--yes` 跳过二次确认 |
 | `scoop status` | 检查可更新版本 | `apm status` | 保留；已锁定（hold）的应用跳过 |
 | `scoop hold <app>` / `unhold <app>` | 锁定/解除锁定版本 | `apm hold <app...>` / `apm unhold <app...>` | 保留；锁定信息存于安装元数据 `hold` 字段，update/status 跳过已锁定应用 |
 | `scoop list [query]` | 列出已安装 | `apm list [query]` | 保留；新增 `--all` 列出全部（与不带 query 等价） |
@@ -708,7 +708,7 @@ args = -X utf8 "D:\Workspace\APM\apps\apm\code\__main__.py"
 - 不再有 `reset` 与多版本并存；`cleanup` 只清理残留目录与临时文件，不负责版本切换。
 - 不支持安装历史版本，`app@version` 只接受与 bucket 当前版本一致的版本号。
 - 不自带 shim 编译工具链；命令入口统一为根目录 `shims\` 下生成的入口文件（含 APM 自身入口）：`.exe/.com` 目标为 vendored shim 副本 + `.shim` 旁车，其余目标为 `.cmd` 文本包装；另有各应用 `env_add_path` 写入的目录。
-- `update` 按参数分派职责：不带参数只更新本体（哈希比较 + 事务表 + 二次确认，见 13.3），不刷新 bucket，退出码只反映本体更新结果；`--all` 依次执行 bucket 索引刷新、本体更新与软件包更新；指定 app 参数时只执行软件包更新。bucket 索引刷新只随 `--all` 进行，不提供单独刷源入口。
+- `update` 按参数分派职责：不带参数只更新本体（哈希比较 + 事务表 + 二次确认，见 13.3），不刷新 bucket，退出码只反映本体更新结果；`--all` 依次执行 bucket 索引刷新、本体更新与软件包更新；指定 app 参数时先刷新 bucket 索引，再检查并更新指定应用（不更新本体）。两种带软件包更新的形式都先刷新 bucket，不提供单独刷源入口；bucket 刷新失败仅记录并保留旧索引，软件包更新照常执行，最终退出码标记失败。
 - 不提供 `scoop alias` 式的用户自定义别名机制；仅内置固定短别名（见 12.6），不支持用户自定义。
 
 ### 12.4 首批实现范围
@@ -856,7 +856,7 @@ flowchart TD
     D --> E["短别名展开：in/rm/se/up/ls → 正式命令；* → --all"]
     E --> E2["CLI 解析参数"]
     E2 --> F{"子命令"}
-    F -->|"install / download / update app"| G["进入两阶段流程"]
+    F -->|"install / download / update app"| G["进入两阶段流程；update app 先刷新 bucket"]
     F -->|"update（无参数 / --all）"| G2["本体更新；--all 先刷新 bucket，再更新本体与全部应用"]
     F -->|"uninstall"| H["卸载流程"]
     F -->|"bucket"| I["bucket 管理"]
@@ -898,6 +898,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     A["apm update --all（* 等价）"] --> B["枚举目标 bucket"]
+    A3["apm update <app...>（指定应用）"] --> B
     B --> B0{"找到 git 程序入口：shims → PATH"}
     B0 -->|"否"| F["保留旧索引，记录失败，继续下一个"]
     B0 -->|"是"| C["git -c url.<改写>.insteadOf=<origin> fetch --depth 1 --no-tags origin"]
@@ -907,7 +908,8 @@ flowchart TD
     E --> G["记录成功"]
     F --> G
     G --> H["汇总结果并输出"]
-    H --> I{"本体：本地已纳入 git 管理<br/>.git 存在且 HEAD 可解析"}
+    H --> I{"本体：本地已纳入 git 管理<br/>.git 存在且 HEAD 可解析<br/>（仅 --all 进入）"}
+    G --> R2["指定应用：跳过本体更新<br/>继续更新指定软件包"]
     A2["apm update（无参数，不刷新 bucket）"] --> I
     I -->|"是"| J["rev-parse HEAD 记为 old"]
     I -->|"否"| I0["git init（幂等）<br/>old 记为 -，无条件浅拉取"]
@@ -924,7 +926,7 @@ flowchart TD
 
 浅克隆约束：
 
-- bucket 索引刷新只随 `apm update --all` 执行，`apm update` 不带参数时只更新本体；单独刷新索引对用户没有实际用途（新索引只有被随后的软件包更新消费才有意义）。
+- bucket 索引刷新随 `apm update --all` 与 `apm update <app...>`（指定应用）执行，`apm update` 不带参数时只更新本体；单独刷新索引对用户没有实际用途（新索引只有被随后的软件包更新消费才有意义）。
 - bucket 只用于读取当前 manifest，`status` 的版本比对也只依赖当前文件，不需要提交历史。
 - 克隆固定使用 `--depth 1 --single-branch --no-tags`，更新固定使用 `git fetch --depth 1`，任何情况下都不执行 `unshallow`。
 - 更新采用 `fetch + reset --hard FETCH_HEAD`，不做 merge，避免 bucket 强制推送时 `--ff-only` 失败。

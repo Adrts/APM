@@ -19,11 +19,13 @@ from .util import (
     create_hardlink,
     create_junction,
     dir_size,
+    display_width,
     ensure_dir,
     has_wildcard,
     human_size,
     lp,
     now_iso,
+    pad_text,
     path_is_within,
     remove_path,
     write_json,
@@ -231,6 +233,8 @@ def update_apps(targets: list[str], assume_yes: bool = False) -> int:
 
     specs: list[str] = []
     errors = 0
+    # “已是最新”行的应用名列按所选应用中最宽的名字补齐，使版本列纵向对齐。
+    app_width = max(display_width(item.app) for item in selected)
     for item in selected:
         if item.hold:
             console.info(msg.MSG_APP_LOCKED_SKIP.format(app=item.app))
@@ -245,7 +249,9 @@ def update_apps(targets: list[str], assume_yes: bool = False) -> int:
             continue
         if ref.version == item.version:
             console.info(
-                msg.MSG_APP_LATEST.format(app=item.app, version=item.version)
+                msg.MSG_APP_LATEST.format(
+                    app=pad_text(item.app, app_width), version=item.version
+                )
             )
             continue
         specs.append(f"{ref.bucket}/{item.app}")

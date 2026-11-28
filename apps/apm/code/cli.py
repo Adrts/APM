@@ -370,8 +370,8 @@ def _set_hold(apps: list[str], hold: bool) -> int:
 def _update(targets: list[str], all_apps: bool = False, assume_yes: bool = False) -> int:
     # update 无参数只更新本体，不刷新 bucket 索引：单独刷源对用户没有实际用途，
     # 只有随后的软件包更新才会消费新索引。
-    # --all 依次执行 bucket 刷新 → 本体更新 → 软件包更新；bucket 失败仅记录并继续
-    # （保留旧索引），本体与软件包阶段照常执行。
+    # 指定应用与 --all 都先刷新 bucket 索引再更新软件包，保证清单检查消费的
+    # 是最新索引；bucket 失败仅记录并继续（保留旧索引），软件包阶段照常执行。
     if all_apps:
         failures = buckets.update_buckets()
         if failures:
@@ -382,7 +382,11 @@ def _update(targets: list[str], all_apps: bool = False, assume_yes: bool = False
         return 1 if failures else result
     if not targets:
         return 1 if selfupdate.run_self_update(assume_yes) else 0
-    return install.update_apps(targets, assume_yes=assume_yes)
+    failures = buckets.update_buckets()
+    if failures:
+        console.failure_list(failures)
+    result = install.update_apps(targets, assume_yes=assume_yes)
+    return 1 if failures else result
 
 
 def _bucket(args: argparse.Namespace) -> int:
