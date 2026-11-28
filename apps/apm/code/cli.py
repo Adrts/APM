@@ -302,10 +302,20 @@ def dispatch(
     # 明细行开关：仅 install / uninstall / update 支持 --verbose。
     console.verbose = bool(getattr(args, "verbose", False))
 
+    # install / download 先刷新全部软件源索引，避免按旧清单解析到旧版本；
+    # bucket 失败仅记录并继续（保留旧索引），最终退出码标记失败。
     if command == "install":
-        return install.install_apps(args.apps, assume_yes=args.yes)
+        failures = buckets.update_buckets()
+        if failures:
+            console.failure_list(failures)
+        result = install.install_apps(args.apps, assume_yes=args.yes)
+        return 1 if failures else result
     if command == "download":
-        return install.download_apps(args.apps)
+        failures = buckets.update_buckets()
+        if failures:
+            console.failure_list(failures)
+        result = install.download_apps(args.apps)
+        return 1 if failures else result
     if command == "uninstall":
         _reject_all_and_positional(parser, args.all, args.apps, "app")
         if args.all:
