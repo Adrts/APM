@@ -373,12 +373,19 @@ def _update(targets: list[str], all_apps: bool = False, assume_yes: bool = False
     # 指定应用与 --all 都先刷新 bucket 索引再更新软件包，保证清单检查消费的
     # 是最新索引；bucket 失败仅记录并继续（保留旧索引），软件包阶段照常执行。
     if all_apps:
+        # “已是最新”行统一列宽：本体与全部已装应用按最宽名字对齐。
+        app_width = max(
+            display_width(selfupdate.SELF_APP_NAME),
+            *(display_width(item.app) for item in installed.installed_apps()),
+        )
         failures = buckets.update_buckets()
         if failures:
             console.failure_list(failures)
-        if selfupdate.run_self_update(assume_yes):
+        if selfupdate.run_self_update(assume_yes, app_width=app_width):
             return 1
-        result = install.update_apps([], assume_yes=assume_yes)
+        result = install.update_apps(
+            [], assume_yes=assume_yes, app_width=app_width
+        )
         return 1 if failures else result
     if not targets:
         return 1 if selfupdate.run_self_update(assume_yes) else 0

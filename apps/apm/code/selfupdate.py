@@ -20,7 +20,7 @@ from . import messages as msg, paths, tools
 from .buckets import git_fetch, git_reset
 from .errors import SelfUpdateError
 from .output import COLOR_INSTALL, console
-from .util import run
+from .util import display_width, pad_text, run
 
 SELF_REPO_URL = "https://github.com/Adrts/APM.git"
 SELF_APP_NAME = "apm"
@@ -74,9 +74,11 @@ def fetch_self(root: Path) -> tuple[str | None, str]:
     return current, fetched
 
 
-def run_self_update(assume_yes: bool) -> bool:
+def run_self_update(assume_yes: bool, app_width: int | None = None) -> bool:
     """本体更新阶段：fetch → 已最新提示 / 事务表+摘要+确认 → reset。
 
+    ``app_width`` 为调用方（``apm update --all``）传入的"已是最新"列宽，
+    使本体行与随后的软件包行纵向对齐；缺省时按本体名自身宽度（不补齐）。
     返回 True 表示失败或确认被取消（调用方据此整体取消，退出码 1）。
     """
     root = paths.ROOT
@@ -86,7 +88,12 @@ def run_self_update(assume_yes: bool) -> bool:
         console.error(str(exc))
         return True
     if old is not None and old == new:
-        console.info(msg.MSG_APP_LATEST.format(app=SELF_APP_NAME, version=old))
+        width = display_width(SELF_APP_NAME) if app_width is None else app_width
+        console.info(
+            msg.MSG_APP_LATEST.format(
+                app=pad_text(SELF_APP_NAME, width), version=old
+            )
+        )
         return False
     console.transaction_table(
         [

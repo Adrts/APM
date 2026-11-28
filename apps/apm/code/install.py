@@ -214,7 +214,11 @@ def _print_transaction_table(refs: list[AppRef], roots: set[str]) -> None:
         console.plain()
 
 
-def update_apps(targets: list[str], assume_yes: bool = False) -> int:
+def update_apps(
+    targets: list[str],
+    assume_yes: bool = False,
+    app_width: int | None = None,
+) -> int:
     installed_apps = {item.app: item for item in installed.installed_apps()}
     if not installed_apps:
         console.info(msg.MSG_NO_INSTALLED)
@@ -233,8 +237,10 @@ def update_apps(targets: list[str], assume_yes: bool = False) -> int:
 
     specs: list[str] = []
     errors = 0
-    # “已是最新”行的应用名列按所选应用中最宽的名字补齐，使版本列纵向对齐。
-    app_width = max(display_width(item.app) for item in selected)
+    # “已是最新”行的应用名列按最宽名字补齐，使版本列纵向对齐；--all 流程
+    # 由调用方传入含本体名在内的统一宽度，保证"apm"行与软件包行对齐。
+    if app_width is None:
+        app_width = max(display_width(item.app) for item in selected)
     for item in selected:
         if item.hold:
             console.info(msg.MSG_APP_LOCKED_SKIP.format(app=item.app))
