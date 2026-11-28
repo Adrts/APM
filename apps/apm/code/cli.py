@@ -14,6 +14,7 @@ from .util import display_width, fit_text, pad_text, terminal_columns
 
 # 预定义短别名：仅命令级，第一个参数精确匹配时替换为正式命令名。
 SHORT_ALIASES = {
+    "dl": "download",
     "in": "install",
     "rm": "uninstall",
     "remove": "uninstall",

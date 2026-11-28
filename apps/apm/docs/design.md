@@ -811,6 +811,7 @@ args = -X utf8 "D:\Workspace\APM\apps\apm\code\__main__.py"
 | 别名 | 展开为 | 示例 |
 | --- | --- | --- |
 | `in` | `install` | `apm in git` → `apm install git` |
+| `dl` | `download` | `apm dl git` → `apm download git` |
 | `rm` / `remove` | `uninstall` | `apm rm git --purge` → `apm uninstall git --purge` |
 | `se` | `search` | `apm se node` → `apm search node` |
 | `up` | `update` | `apm up` → `apm update` |
